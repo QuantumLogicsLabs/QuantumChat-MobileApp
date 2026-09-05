@@ -425,6 +425,11 @@ class ApiClient {
     final body = await get('/groups/$groupId/messages', query: query);
     return (body['data'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
   }
+  
+  Future<Map<String, dynamic>> votePoll(String messageId, int optionIndex) async {
+    final body = await post('/groups/messages/$messageId/poll-vote', {'optionIndex': optionIndex});
+    return body['data'] as Map<String, dynamic>;
+  }
 
   Future<Map<String, dynamic>> sendGroupMessage(String groupId, Map<String, dynamic> payload) async {
     final body = await post('/groups/$groupId/messages', payload);

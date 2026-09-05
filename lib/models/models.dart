@@ -377,6 +377,12 @@ class EditHistoryEntry {
   final String? text;
 }
 
+class PollVote {
+  const PollVote({required this.userId, required this.optionIndex});
+  final String userId;
+  final int optionIndex;
+}
+
 class ChatMessage {
   ChatMessage({
     required this.id,
@@ -404,6 +410,9 @@ class ChatMessage {
     this.viewOnceOpenedBy,
     this.viewOnceMediaKind,
     this.mentionedUserIds = const [],
+    this.pollQuestion,
+    this.pollOptions = const [],
+    this.pollVotes = const [],
   });
 
   final String id;
@@ -431,6 +440,9 @@ class ChatMessage {
   String? viewOnceOpenedBy;
   String? viewOnceMediaKind;
   final List<String> mentionedUserIds;
+  String? pollQuestion;
+  List<String> pollOptions;
+  List<PollVote> pollVotes;
 
   bool isMine(String myId) => from == myId;
   bool get hasMedia => attachment != null || kind == 'file' || kind == 'image' || kind == 'gif';

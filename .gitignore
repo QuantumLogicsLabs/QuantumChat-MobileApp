@@ -6,6 +6,8 @@
 .pub/
 build/
 coverage/
+#personal use files
+repomix-app-output.xml
 
 
 
