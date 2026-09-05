@@ -564,7 +564,8 @@ class ChatController extends ChangeNotifier {
         }
       }
     }
-
+    String? pollQuestion;
+    List<String> pollOptions = const [];
     if (text != null && text.trim().startsWith('{')) {
       try {
         final obj = jsonDecode(text) as Map<String, dynamic>;
