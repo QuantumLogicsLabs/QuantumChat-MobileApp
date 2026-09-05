@@ -208,6 +208,16 @@ class _ThreadScreenState extends State<ThreadScreen> {
         );
   }
 
+  Future<void> _createPollSheet() async {
+    final colors = context.read<ThemeController>().colors;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: colors.surface,
+      isScrollControlled: true,
+      builder: (ctx) => _CreatePollSheet(colors: colors),
+    );
+  }
+
   Future<void> _attachSheet() async {
     final colors = context.read<ThemeController>().colors;
     await showModalBottomSheet<void>(
@@ -249,6 +259,15 @@ class _ThreadScreenState extends State<ThreadScreen> {
                 showGifPickerSheet(context);
               },
             ),
+            if (context.read<ChatController>().selected?.type == ConversationType.group)
+              ListTile(
+                leading: const Icon(Icons.poll_outlined),
+                title: const Text('Poll'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _createPollSheet();
+                },
+              ),
           ],
         ),
       ),
@@ -1000,7 +1019,12 @@ class _MessageBubble extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                            if (message.attachment != null && !message.viewOnce)
+                            if (message.kind == 'poll')
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 6),
+                                child: _PollBubble(message: message, colors: colors),
+                              ),
+                            if (message.attachment != null && !message.viewOnce)   // ← existing line, unchanged
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 6),
                                 child: AttachmentBubble(message: message, colors: colors),
@@ -1150,6 +1174,221 @@ class _MentionRichText extends StatelessWidget {
       spans.add(TextSpan(text: text.substring(lastEnd)));
     }
     return RichText(text: TextSpan(style: baseStyle, children: spans));
+  }
+}
+
+class _PollBubble extends StatelessWidget {
+  const _PollBubble({required this.message, required this.colors});
+
+  final ChatMessage message;
+  final QcColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    final chat = context.watch<ChatController>();
+    final votes = message.pollVotes;
+    final total = votes.length;
+    PollVote? myVote;
+    for (final v in votes) {
+      if (v.userId == chat.me.id) myVote = v;
+    }
+    return Container(
+      constraints: const BoxConstraints(minWidth: 220),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: colors.overlay.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.poll_outlined, size: 14, color: colors.accentCyan),
+              const SizedBox(width: 4),
+              Text('POLL', style: TextStyle(color: colors.accentCyan, fontSize: 11, fontWeight: FontWeight.w700)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            message.pollQuestion ?? '',
+            style: TextStyle(color: colors.bubbleTheirsFg, fontWeight: FontWeight.w600, height: 1.3),
+          ),
+          const SizedBox(height: 8),
+          ...List.generate(message.pollOptions.length, (idx) {
+            final opt = message.pollOptions[idx];
+            final count = votes.where((v) => v.optionIndex == idx).length;
+            final pct = total == 0 ? 0.0 : count / total;
+            final selected = myVote?.optionIndex == idx;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: GestureDetector(
+                onTap: () => chat.votePoll(message, idx),
+                child: Stack(
+                  children: [
+                    Container(
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: colors.surface.withValues(alpha: 0.4),
+                        borderRadius: BorderRadius.circular(8),
+                        border: selected ? Border.all(color: colors.accentCyan, width: 1.5) : null,
+                      ),
+                    ),
+                    FractionallySizedBox(
+                      widthFactor: pct.clamp(0.0, 1.0),
+                      child: Container(
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: colors.accentCyan.withValues(alpha: 0.25),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                    Positioned.fill(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                opt,
+                                style: TextStyle(color: colors.bubbleTheirsFg, fontSize: 13),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Text(
+                              '$count · ${(pct * 100).round()}%',
+                              style: TextStyle(color: colors.textMuted, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+          Text(
+            '$total vote${total == 1 ? '' : 's'}',
+            style: TextStyle(color: colors.textMuted, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CreatePollSheet extends StatefulWidget {
+  const _CreatePollSheet({required this.colors});
+  final QcColors colors;
+
+  @override
+  State<_CreatePollSheet> createState() => _CreatePollSheetState();
+}
+
+class _CreatePollSheetState extends State<_CreatePollSheet> {
+  final _questionCtrl = TextEditingController();
+  final List<TextEditingController> _optionCtrls = [
+    TextEditingController(),
+    TextEditingController(),
+  ];
+
+  @override
+  void dispose() {
+    _questionCtrl.dispose();
+    for (final c in _optionCtrls) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  void _addOption() {
+    if (_optionCtrls.length >= 4) return;
+    setState(() => _optionCtrls.add(TextEditingController()));
+  }
+
+  void _removeOption(int idx) {
+    if (_optionCtrls.length <= 2) return;
+    setState(() {
+      final removed = _optionCtrls.removeAt(idx);
+      removed.dispose();
+    });
+  }
+
+  Future<void> _submit() async {
+    final options = _optionCtrls.map((c) => c.text).toList();
+    final question = _questionCtrl.text;
+    if (question.trim().isEmpty ||
+        options.where((o) => o.trim().isNotEmpty).length < 2) {
+      return;
+    }
+    Navigator.pop(context);
+    await context.read<ChatController>().sendPoll(question, options);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = widget.colors;
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Create poll',
+              style: TextStyle(color: colors.textPrimary, fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _questionCtrl,
+              style: TextStyle(color: colors.textPrimary),
+              decoration: const InputDecoration(hintText: 'Ask a question'),
+            ),
+            const SizedBox(height: 10),
+            ...List.generate(_optionCtrls.length, (idx) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _optionCtrls[idx],
+                        style: TextStyle(color: colors.textPrimary),
+                        decoration: InputDecoration(hintText: 'Option ${idx + 1}'),
+                      ),
+                    ),
+                    if (_optionCtrls.length > 2)
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        onPressed: () => _removeOption(idx),
+                      ),
+                  ],
+                ),
+              );
+            }),
+            if (_optionCtrls.length < 4)
+              TextButton.icon(
+                onPressed: _addOption,
+                icon: const Icon(Icons.add),
+                label: const Text('Add option'),
+              ),
+            const SizedBox(height: 8),
+            FilledButton(
+              onPressed: _submit,
+              child: const Text('Send poll'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

@@ -105,6 +105,7 @@ class ChatController extends ChangeNotifier {
     socket.on('friend:request:new', _handleFriendRequestNew);
     socket.on('friend:request:accepted', _handleFriendRequestAccepted);
     socket.on('message:view-once-opened', _handleViewOnceOpened);
+    socket.on('message:poll', _handleMessagePoll);   // in _ensureSocketHandlers
   }
 
   void _removeSocketHandlers() {
@@ -119,6 +120,7 @@ class ChatController extends ChangeNotifier {
     socket.off('friend:request:new', _handleFriendRequestNew);
     socket.off('friend:request:accepted', _handleFriendRequestAccepted);
     socket.off('message:view-once-opened', _handleViewOnceOpened);
+    socket.off('message:poll', _handleMessagePoll);  // in _removeSocketHandlers
   }
 
   Future<void> _handleMessageNew(dynamic raw) async {
@@ -202,6 +204,18 @@ class ChatController extends ChangeNotifier {
       return m;
     }).toList();
     notifyListeners();
+  }
+
+  Future<void> _handleMessagePoll(dynamic raw) async {
+    if (raw is! Map) return;
+    try {
+      final updated = await decorate(_coerceMap(raw));
+      if (!messages.any((m) => m.id == updated.id)) return;
+      messages = messages.map((m) => m.id == updated.id ? updated : m).toList();
+      notifyListeners();
+    } catch (e, st) {
+      debugPrint('message:poll handler failed: $e\n$st');
+    }
   }
 
   Future<void> _refreshFriendRequests() async {
@@ -562,8 +576,21 @@ class ChatController extends ChangeNotifier {
           text = obj['filename'] as String? ?? 'File';
           groupFileMeta = obj;
         }
+        else if (obj['__qc'] == 1 && obj['type'] == 'poll') {
+          pollQuestion = obj['question'] as String? ?? '';
+          pollOptions = (obj['options'] as List<dynamic>? ?? []).map((o) => '$o').toList();
+          text = pollQuestion;
+        }
       } catch (_) {}
     }
+
+    final pollVotes = (raw['pollVotes'] as List<dynamic>? ?? [])
+        .whereType<Map>()
+        .map((v) => PollVote(
+              userId: _normalizeUserId(v['user']) ?? '',
+              optionIndex: (v['optionIndex'] as num?)?.toInt() ?? 0,
+            ))
+        .toList();
 
     final reactions = <Reaction>[];
     for (final r in (raw['reactions'] as List<dynamic>? ?? [])) {
@@ -700,6 +727,9 @@ class ChatController extends ChangeNotifier {
       viewOnceOpenedBy: _normalizeUserId(raw['viewOnceOpenedBy']),
       viewOnceMediaKind: raw['viewOnceMediaKind'] as String?,
       mentionedUserIds: mentionedUserIds,
+      pollQuestion: pollQuestion,
+      pollOptions: pollOptions,
+      pollVotes: pollVotes,
     );
   }
 
@@ -837,6 +867,18 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  Future<void> votePoll(ChatMessage message, int optionIndex) async {
+    try {
+      final raw = await auth.api.votePoll(message.id, optionIndex);
+      final updated = await decorate(raw);
+      messages = messages.map((m) => m.id == updated.id ? updated : m).toList();
+      notifyListeners();
+    } on ApiException catch (e) {
+      threadError = e.message;
+      notifyListeners();
+    }
+  }
+
   Future<void> sendAttachmentBytes({
     required Uint8List bytes,
     required String filename,
@@ -911,6 +953,46 @@ class ChatController extends ChangeNotifier {
         messages = [...messages, msg];
       }
       clearComposerContext();
+      await storage.setConversationActivity(
+        me.id,
+        conv.key,
+        at: DateTime.now().toUtc().toIso8601String(),
+        from: me.id,
+      );
+      _rebuildConversations();
+    } on ApiException catch (e) {
+      threadError = e.message;
+    } finally {
+      sending = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> sendPoll(String question, List<String> options) async {
+    final conv = selected;
+    if (conv == null || conv.type != ConversationType.group || sending) return;
+    final trimmedQuestion = question.trim();
+    final trimmedOptions = options.map((o) => o.trim()).where((o) => o.isNotEmpty).toList();
+    if (trimmedQuestion.isEmpty || trimmedOptions.length < 2) return;
+    sending = true;
+    notifyListeners();
+    try {
+      final group = conv.group ?? groups.firstWhere((g) => g.id == conv.id);
+      final plaintext = jsonEncode({
+        '__qc': 1,
+        'type': 'poll',
+        'question': trimmedQuestion,
+        'options': trimmedOptions.take(8).toList(),
+      });
+      final payload = <String, dynamic>{'kind': 'poll'};
+      if (group.isPublic) {
+        payload['content'] = plaintext;
+      } else {
+        payload['envelopes'] = await _sealGroupEnvelopes(plaintext, group);
+      }
+      final raw = await auth.api.sendGroupMessage(conv.id, payload);
+      final msg = await decorate(raw);
+      messages = [...messages, msg];
       await storage.setConversationActivity(
         me.id,
         conv.key,
