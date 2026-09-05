@@ -7,6 +7,7 @@ import '../api/qc_socket.dart';
 import '../crypto/key_storage.dart';
 import '../crypto/qc_crypto.dart';
 import '../models/models.dart';
+import '../utils/group_payload.dart';
 import '../widgets/avatar_cache.dart';
 import 'auth_controller.dart';
 
@@ -98,6 +99,7 @@ class ChatController extends ChangeNotifier {
     _handlersRegistered = true;
     socket.on('message:new', _handleMessageNew);
     socket.on('message:status', _handleMessageStatus);
+    socket.on('message:poll', _handleMessagePoll);
     socket.on('presence:snapshot', _handlePresenceSnapshot);
     socket.on('presence:update', _handlePresenceUpdate);
     socket.on('typing:start', _handleTypingStart);
@@ -112,6 +114,7 @@ class ChatController extends ChangeNotifier {
     _handlersRegistered = false;
     socket.off('message:new', _handleMessageNew);
     socket.off('message:status', _handleMessageStatus);
+    socket.off('message:poll', _handleMessagePoll);
     socket.off('presence:snapshot', _handlePresenceSnapshot);
     socket.off('presence:update', _handlePresenceUpdate);
     socket.off('typing:start', _handleTypingStart);
@@ -126,6 +129,22 @@ class ChatController extends ChangeNotifier {
       await _ingestRawMessage(raw);
     } catch (e, st) {
       debugPrint('message:new handler failed: $e\n$st');
+    }
+  }
+
+  Future<void> _handleMessagePoll(dynamic raw) async {
+    try {
+      if (raw is! Map) return;
+      final map = _coerceMap(raw);
+      final id = _messageId(map);
+      if (id.isEmpty) return;
+      final conv = selected;
+      if (conv == null || !_rawBelongsToConversation(map, conv)) return;
+      final updated = await decorate(map);
+      messages = messages.map((m) => m.id == id ? updated : m).toList();
+      notifyListeners();
+    } catch (e, st) {
+      debugPrint('message:poll handler failed: $e\n$st');
     }
   }
 
@@ -551,16 +570,29 @@ class ChatController extends ChangeNotifier {
       }
     }
 
+    PollData? pollData;
+    EventData? eventData;
+    String? announcementBody;
     if (text != null && text.trim().startsWith('{')) {
       try {
         final obj = jsonDecode(text) as Map<String, dynamic>;
-        if (obj['__qc'] == 1 && obj['type'] == 'announcement') {
-          text = obj['body'] as String? ?? text;
-        } else if (obj['__qc'] == 1 && obj['type'] == 'text') {
-          text = obj['body'] as String? ?? text;
-        } else if (obj['__qc'] == 1 && obj['type'] == 'file') {
-          text = obj['filename'] as String? ?? 'File';
-          groupFileMeta = obj;
+        if (obj['__qc'] == 1) {
+          final type = obj['type'] as String?;
+          if (type == 'announcement') {
+            announcementBody = obj['body'] as String? ?? '';
+            text = announcementBody;
+          } else if (type == 'text') {
+            text = obj['body'] as String? ?? text;
+          } else if (type == 'file') {
+            text = obj['filename'] as String? ?? 'File';
+            groupFileMeta = obj;
+          } else if (type == 'poll') {
+            pollData = PollData.fromPayload(obj);
+            text = pollData.question;
+          } else if (type == 'event') {
+            eventData = EventData.fromPayload(obj);
+            text = eventData.title;
+          }
         }
       } catch (_) {}
     }
@@ -677,8 +709,28 @@ class ChatController extends ChangeNotifier {
         .map((e) => '$e')
         .toList();
 
+    final pollVotes = <PollVote>[];
+    for (final v in (raw['pollVotes'] as List<dynamic>? ?? [])) {
+      if (v is Map) {
+        pollVotes.add(PollVote.fromJson(Map<String, dynamic>.from(v)));
+      }
+    }
+
+    final kind = raw['kind'] as String? ?? (attachment != null ? 'file' : 'text');
+    // Prefer kind from server; fall back to payload type when kind is missing.
+    final resolvedKind = kind != 'text'
+        ? kind
+        : pollData != null
+            ? 'poll'
+            : eventData != null
+                ? 'event'
+                : announcementBody != null
+                    ? 'announcement'
+                    : kind;
+
     return ChatMessage(
-      id: '${raw['id'] ?? raw['_id']}',
+      // Normalize IDs (string vs {$oid: ...} shapes) so optimistic + socket payloads dedupe correctly.
+      id: _messageId(raw),
       from: from,
       to: _normalizeUserId(raw['to']),
       groupId: _normalizeUserId(raw['group']),
@@ -691,7 +743,7 @@ class ChatController extends ChangeNotifier {
       reactions: reactions,
       replyToId: replyToId,
       replyToText: replyToText,
-      kind: raw['kind'] as String? ?? (attachment != null ? 'file' : 'text'),
+      kind: resolvedKind,
       attachment: attachment,
       forwardedFrom: forwardedFrom,
       editHistory: editHistory,
@@ -700,6 +752,10 @@ class ChatController extends ChangeNotifier {
       viewOnceOpenedBy: _normalizeUserId(raw['viewOnceOpenedBy']),
       viewOnceMediaKind: raw['viewOnceMediaKind'] as String?,
       mentionedUserIds: mentionedUserIds,
+      pollData: pollData,
+      pollVotes: pollVotes,
+      eventData: eventData,
+      announcementBody: announcementBody,
     );
   }
 
@@ -778,6 +834,101 @@ class ChatController extends ChangeNotifier {
       threadError = e.message;
     } finally {
       sending = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _sendGroupStructuredPayload(String plaintext, {required String kind}) async {
+    final conv = selected;
+    if (conv == null || conv.type != ConversationType.group || sending) return;
+    sending = true;
+    notifyListeners();
+    try {
+      final group = conv.group ?? groups.firstWhere((g) => g.id == conv.id);
+      final payload = <String, dynamic>{'kind': kind};
+      if (group.isPublic) {
+        payload['content'] = plaintext;
+      } else {
+        payload['envelopes'] = await _sealGroupEnvelopes(plaintext, group);
+      }
+      if (replyTo != null) payload['replyTo'] = replyTo!.id;
+      if (disappearSeconds > 0) payload['expiresInSeconds'] = disappearSeconds;
+      final raw = await auth.api.sendGroupMessage(conv.id, payload);
+      final msg = await decorate(raw);
+      messages = [...messages, msg];
+      clearComposerContext();
+      await storage.setConversationActivity(
+        me.id,
+        conv.key,
+        at: DateTime.now().toUtc().toIso8601String(),
+        from: me.id,
+      );
+      _rebuildConversations();
+    } on ApiException catch (e) {
+      threadError = e.message;
+    } finally {
+      sending = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> sendPoll(String question, List<String> options) async {
+    final conv = selected;
+    if (conv == null || conv.type != ConversationType.group) return;
+    final cleaned = options.map((o) => o.trim()).where((o) => o.isNotEmpty).toList();
+    if (question.trim().isEmpty || cleaned.length < 2) {
+      threadError = 'Poll needs a question and at least 2 options';
+      notifyListeners();
+      return;
+    }
+    await _sendGroupStructuredPayload(
+      encodePoll(question: question, options: cleaned),
+      kind: 'poll',
+    );
+  }
+
+  Future<void> sendEvent({
+    required String title,
+    String? when,
+    String location = '',
+    String notes = '',
+  }) async {
+    final conv = selected;
+    if (conv == null || conv.type != ConversationType.group) return;
+    if (title.trim().isEmpty) {
+      threadError = 'Event needs a title';
+      notifyListeners();
+      return;
+    }
+    await _sendGroupStructuredPayload(
+      encodeEvent(title: title, when: when, location: location, notes: notes),
+      kind: 'event',
+    );
+  }
+
+  Future<void> sendAnnouncement(String body) async {
+    final conv = selected;
+    if (conv == null || conv.type != ConversationType.group) return;
+    if (body.trim().isEmpty) {
+      threadError = 'Announcement cannot be empty';
+      notifyListeners();
+      return;
+    }
+    await _sendGroupStructuredPayload(
+      encodeAnnouncement(body),
+      kind: 'announcement',
+    );
+  }
+
+  Future<void> voteOnPoll(ChatMessage message, int optionIndex) async {
+    if (!message.isPoll || optionIndex < 0) return;
+    try {
+      final raw = await auth.api.votePoll(message.id, optionIndex);
+      final updated = await decorate(raw);
+      messages = messages.map((m) => m.id == message.id ? updated : m).toList();
+      notifyListeners();
+    } on ApiException catch (e) {
+      threadError = e.message;
       notifyListeners();
     }
   }
@@ -1119,9 +1270,19 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<QcGroup?> createGroup(String name, List<String> memberIds) async {
+  Future<QcGroup?> createGroup(
+    String name,
+    List<String> memberIds, {
+    String visibility = 'private',
+    String? joinPolicy,
+  }) async {
     try {
-      final group = await auth.api.createGroup(name: name, memberIds: memberIds);
+      final group = await auth.api.createGroup(
+        name: name,
+        memberIds: memberIds,
+        visibility: visibility,
+        joinPolicy: joinPolicy,
+      );
       groups = [group, ...groups];
       _rebuildConversations();
       return group;

@@ -16,6 +16,7 @@ import '../widgets/edit_history_sheet.dart';
 import '../widgets/forward_sheet.dart';
 import '../widgets/emoji_picker_sheet.dart';
 import '../widgets/gif_picker_sheet.dart';
+import '../widgets/group_message_content.dart';
 import '../widgets/image_lightbox.dart';
 import '../widgets/mention_overlay.dart';
 import '../widgets/message_actions_sheet.dart';
@@ -45,6 +46,13 @@ class _ThreadScreenState extends State<ThreadScreen> {
   OverlayEntry? _mentionOverlay;
   Timer? _liveRefresh;
 
+  final AudioRecorder _recorder = AudioRecorder();
+  bool _recording = false;
+  int _recordSeconds = 0;
+  Timer? _recordTimer;
+  String? _recordPath;
+  static const int _maxRecordSeconds = 60;
+
   @override
   void initState() {
     super.initState();
@@ -61,6 +69,8 @@ class _ThreadScreenState extends State<ThreadScreen> {
   @override
   void dispose() {
     _liveRefresh?.cancel();
+    _recordTimer?.cancel();
+    unawaited(_recorder.dispose());
     _removeMentionOverlay();
     composer.dispose();
     scroll.dispose();
@@ -130,9 +140,12 @@ class _ThreadScreenState extends State<ThreadScreen> {
   }
 
   Future<void> _send() async {
-    final text = composer.text;
+    final chat = context.read<ChatController>();
+    if (chat.sending) return;
+    final text = composer.text.trim();
+    if (text.isEmpty) return;
     composer.clear();
-    await context.read<ChatController>().sendText(text);
+    await chat.sendText(text);
     await Future<void>.delayed(const Duration(milliseconds: 50));
     if (scroll.hasClients) {
       scroll.animateTo(
@@ -210,6 +223,20 @@ class _ThreadScreenState extends State<ThreadScreen> {
 
   Future<void> _attachSheet() async {
     final colors = context.read<ThemeController>().colors;
+    final chat = context.read<ChatController>();
+    final isGroup = chat.selected?.type == ConversationType.group;
+    QcGroup? group = chat.selected?.group;
+    if (group == null && isGroup) {
+      final id = chat.selected!.id;
+      for (final g in chat.groups) {
+        if (g.id == id) {
+          group = g;
+          break;
+        }
+      }
+    }
+    final isAdmin = group != null && group.isAdmin(chat.me.id);
+
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: colors.surface,
@@ -249,10 +276,221 @@ class _ThreadScreenState extends State<ThreadScreen> {
                 showGifPickerSheet(context);
               },
             ),
+            if (isGroup) ...[
+              const Divider(height: 8),
+              ListTile(
+                leading: const Icon(Icons.poll_outlined),
+                title: const Text('Poll'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _createPollDialog();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.event_outlined),
+                title: const Text('Event'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _createEventDialog();
+                },
+              ),
+              if (isAdmin)
+                ListTile(
+                  leading: const Icon(Icons.campaign_outlined),
+                  title: const Text('Announce'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _createAnnouncementDialog();
+                  },
+                ),
+            ],
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _createPollDialog() async {
+    final colors = context.read<ThemeController>().colors;
+    final questionCtrl = TextEditingController();
+    final optionCtrls = List.generate(2, (_) => TextEditingController());
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            return AlertDialog(
+              backgroundColor: colors.surface,
+              title: Text('Create poll', style: TextStyle(color: colors.textPrimary)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: questionCtrl,
+                      decoration: const InputDecoration(labelText: 'Question'),
+                      autofocus: true,
+                    ),
+                    const SizedBox(height: 12),
+                    ...List.generate(optionCtrls.length, (i) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: TextField(
+                          controller: optionCtrls[i],
+                          decoration: InputDecoration(labelText: 'Option ${i + 1}'),
+                        ),
+                      );
+                    }),
+                    if (optionCtrls.length < 6)
+                      TextButton.icon(
+                        onPressed: () {
+                          setLocal(() => optionCtrls.add(TextEditingController()));
+                        },
+                        icon: const Icon(Icons.add, size: 18),
+                        label: const Text('Add option'),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Send')),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    final question = questionCtrl.text;
+    final options = optionCtrls.map((c) => c.text).toList();
+    for (final c in [...optionCtrls, questionCtrl]) {
+      c.dispose();
+    }
+    if (ok != true || !mounted) return;
+    await context.read<ChatController>().sendPoll(question, options);
+  }
+
+  Future<void> _createEventDialog() async {
+    final colors = context.read<ThemeController>().colors;
+    final titleCtrl = TextEditingController();
+    final locationCtrl = TextEditingController();
+    final notesCtrl = TextEditingController();
+    DateTime? when = DateTime.now().add(const Duration(days: 1));
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            final whenLabel = when == null
+                ? 'Pick date & time'
+                : '${when!.year.toString().padLeft(4, '0')}-'
+                    '${when!.month.toString().padLeft(2, '0')}-'
+                    '${when!.day.toString().padLeft(2, '0')} '
+                    '${when!.hour.toString().padLeft(2, '0')}:'
+                    '${when!.minute.toString().padLeft(2, '0')}';
+            return AlertDialog(
+              backgroundColor: colors.surface,
+              title: Text('Create event', style: TextStyle(color: colors.textPrimary)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: titleCtrl,
+                      decoration: const InputDecoration(labelText: 'Title'),
+                      autofocus: true,
+                    ),
+                    const SizedBox(height: 8),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.schedule, color: colors.accentCyan),
+                      title: Text(whenLabel, style: TextStyle(color: colors.textPrimary, fontSize: 14)),
+                      onTap: () async {
+                        final date = await showDatePicker(
+                          context: ctx,
+                          initialDate: when ?? DateTime.now(),
+                          firstDate: DateTime.now().subtract(const Duration(days: 1)),
+                          lastDate: DateTime.now().add(const Duration(days: 365 * 3)),
+                        );
+                        if (date == null || !ctx.mounted) return;
+                        final time = await showTimePicker(
+                          context: ctx,
+                          initialTime: TimeOfDay.fromDateTime(when ?? DateTime.now()),
+                        );
+                        if (time == null) return;
+                        setLocal(() {
+                          when = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+                        });
+                      },
+                    ),
+                    TextField(
+                      controller: locationCtrl,
+                      decoration: const InputDecoration(labelText: 'Location'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: notesCtrl,
+                      decoration: const InputDecoration(labelText: 'Notes'),
+                      maxLines: 3,
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Send')),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    final title = titleCtrl.text;
+    final location = locationCtrl.text;
+    final notes = notesCtrl.text;
+    final whenIso = when?.toUtc().toIso8601String();
+    titleCtrl.dispose();
+    locationCtrl.dispose();
+    notesCtrl.dispose();
+    if (ok != true || !mounted) return;
+    await context.read<ChatController>().sendEvent(
+          title: title,
+          when: whenIso,
+          location: location,
+          notes: notes,
+        );
+  }
+
+  Future<void> _createAnnouncementDialog() async {
+    final colors = context.read<ThemeController>().colors;
+    final bodyCtrl = TextEditingController();
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: colors.surface,
+        title: Text('Announcement', style: TextStyle(color: colors.textPrimary)),
+        content: TextField(
+          controller: bodyCtrl,
+          decoration: const InputDecoration(labelText: 'Message'),
+          maxLines: 5,
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Send')),
+        ],
+      ),
+    );
+
+    final body = bodyCtrl.text;
+    bodyCtrl.dispose();
+    if (ok != true || !mounted) return;
+    await context.read<ChatController>().sendAnnouncement(body);
   }
 
   Future<void> _chatOptions() async {
@@ -611,7 +849,11 @@ class _ThreadScreenState extends State<ThreadScreen> {
                                   colors: colors,
                                   scenic: scenic,
                                   highlight: searchQuery.isNotEmpty,
+                                  currentUserId: chat.me.id,
                                   onOpenActions: () => _messageActions(m),
+                                  onVotePoll: (m.isPoll)
+                                      ? (idx) => chat.voteOnPoll(m, idx)
+                                      : null,
                                 ),
                               ],
                             );
@@ -810,7 +1052,14 @@ class _ThreadScreenState extends State<ThreadScreen> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Removed from this device')));
       }
     } else if (action == 'info') {
-      if (mounted) showMessageInfoSheet(context: context, message: message, colors: colors);
+      if (mounted) {
+        showMessageInfoSheet(
+          context: context,
+          message: message,
+          colors: colors,
+          isGroup: isGroup,
+        );
+      }
     } else if (action == 'edit_history') {
       if (mounted) {
         showEditHistorySheet(
@@ -911,6 +1160,8 @@ class _MessageBubble extends StatelessWidget {
     required this.colors,
     required this.scenic,
     required this.onOpenActions,
+    required this.currentUserId,
+    this.onVotePoll,
     this.highlight = false,
   });
 
@@ -921,6 +1172,8 @@ class _MessageBubble extends StatelessWidget {
   final QcColors colors;
   final bool scenic;
   final VoidCallback onOpenActions;
+  final String currentUserId;
+  final void Function(int optionIndex)? onVotePoll;
   final bool highlight;
 
   @override
@@ -1010,7 +1263,17 @@ class _MessageBubble extends StatelessWidget {
                                 padding: const EdgeInsets.only(bottom: 6),
                                 child: _ViewOnceBubble(message: message, colors: colors),
                               ),
-                            if (message.text != null && message.attachment == null)
+                            if (message.isPoll || message.isEvent || message.isAnnouncement)
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: GroupMessageContent(
+                                  message: message,
+                                  colors: colors,
+                                  currentUserId: currentUserId,
+                                  onVotePoll: onVotePoll,
+                                ),
+                              )
+                            else if (message.text != null && message.attachment == null)
                               Align(
                                 alignment: Alignment.centerLeft,
                                 child: _MentionRichText(

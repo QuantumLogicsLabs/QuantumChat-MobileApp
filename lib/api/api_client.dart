@@ -354,11 +354,15 @@ class ApiClient {
     required String name,
     String description = '',
     List<String> memberIds = const [],
+    String visibility = 'private',
+    String? joinPolicy,
   }) async {
     final body = await post('/groups', {
       'name': name,
       'description': description,
       'memberIds': memberIds,
+      'visibility': visibility,
+      if (visibility == 'public') 'joinPolicy': joinPolicy == 'request' ? 'request' : 'open',
     });
     return QcGroup.fromJson(body['data'] as Map<String, dynamic>);
   }
@@ -377,6 +381,18 @@ class ApiClient {
 
   Future<void> leaveGroup(String groupId, String myId) async {
     await delete('/groups/$groupId/members/$myId');
+  }
+
+  Future<QcGroup> setGroupInvite({
+    required String groupId,
+    bool enabled = true,
+    bool rotate = false,
+  }) async {
+    final body = await post('/groups/$groupId/invite', {
+      'enabled': enabled,
+      'rotate': rotate,
+    });
+    return QcGroup.fromJson(body['data'] as Map<String, dynamic>);
   }
 
   Future<void> deleteGroup(String groupId) async {
@@ -410,6 +426,11 @@ class ApiClient {
     _decode(res);
   }
 
+  Future<Map<String, dynamic>> getMessageInfo(String id) async {
+    final body = await get('/messages/$id/info');
+    return (body['data'] as Map<String, dynamic>?) ?? {};
+  }
+
   Future<void> markRead(String userId) async {
     await post('/messages/$userId/read');
   }
@@ -428,6 +449,13 @@ class ApiClient {
 
   Future<Map<String, dynamic>> sendGroupMessage(String groupId, Map<String, dynamic> payload) async {
     final body = await post('/groups/$groupId/messages', payload);
+    return body['data'] as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> votePoll(String messageId, int optionIndex) async {
+    final body = await post('/groups/messages/$messageId/poll-vote', {
+      'optionIndex': optionIndex,
+    });
     return body['data'] as Map<String, dynamic>;
   }
 
@@ -659,5 +687,40 @@ class ApiClient {
     final normalized = code.trim().toLowerCase();
     final body = await post('/groups/join/$normalized');
     return QcGroup.fromJson(body['data'] as Map<String, dynamic>);
+  }
+
+  // ── Discover / public join ──
+
+  Future<List<DiscoverGroup>> discoverGroups({String q = ''}) async {
+    final query = <String, String>{'limit': '30'};
+    if (q.isNotEmpty) query['q'] = q;
+    final body = await get('/groups/discover', query: query);
+    final data = body['data'] as List<dynamic>? ?? [];
+    return data.map((e) => DiscoverGroup.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  Future<QcGroup> joinPublicGroup(String groupId) async {
+    final body = await post('/groups/$groupId/join');
+    return QcGroup.fromJson(body['data'] as Map<String, dynamic>);
+  }
+
+  Future<Map<String, dynamic>> createJoinRequest(String groupId) async {
+    final body = await post('/groups/$groupId/join-requests');
+    return (body['data'] as Map<String, dynamic>?) ?? {};
+  }
+
+  Future<List<GroupJoinRequest>> listJoinRequests(String groupId) async {
+    final body = await get('/groups/$groupId/join-requests');
+    final data = body['data'] as List<dynamic>? ?? [];
+    return data.map((e) => GroupJoinRequest.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  Future<QcGroup> acceptJoinRequest(String groupId, String userId) async {
+    final body = await post('/groups/$groupId/join-requests/$userId/accept');
+    return QcGroup.fromJson(body['data'] as Map<String, dynamic>);
+  }
+
+  Future<void> rejectJoinRequest(String groupId, String userId) async {
+    await post('/groups/$groupId/join-requests/$userId/reject');
   }
 }

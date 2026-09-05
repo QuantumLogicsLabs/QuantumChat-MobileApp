@@ -155,6 +155,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _removeAvatar() async {
+    final auth = context.read<AuthController>();
+    final user = auth.user;
+    if (user == null || !user.hasAvatar) return;
+    try {
+      await auth.api.deleteAvatar();
+      if (!mounted) return;
+      AvatarCache.instance.bust(user.id);
+      auth.updateUser(user.copyWith(hasAvatar: false));
+      setState(() => status = 'Photo removed');
+    } on ApiException catch (e) {
+      setState(() => status = e.message);
+    }
+  }
+
   Future<void> _changePassword() async {
     try {
       await context.read<AuthController>().api.changePassword(
@@ -248,6 +263,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 8),
           Center(child: Text('@${user.username}', style: TextStyle(color: colors.textMuted))),
+          if (user.hasAvatar) ...[
+            const SizedBox(height: 8),
+            Center(
+              child: TextButton(
+                onPressed: _removeAvatar,
+                child: Text('Remove photo', style: TextStyle(color: colors.error)),
+              ),
+            ),
+          ],
           if (status != null) ...[
             const SizedBox(height: 8),
             Text(status!, textAlign: TextAlign.center, style: TextStyle(color: colors.accentCyan)),

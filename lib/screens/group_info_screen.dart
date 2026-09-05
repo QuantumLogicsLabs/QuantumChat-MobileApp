@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../models/models.dart';
 import '../state/auth_controller.dart';
 import '../state/chat_controller.dart';
 import '../state/theme_controller.dart';
+import '../theme/qc_theme.dart';
 import '../widgets/avatar_cache.dart';
 import '../widgets/common.dart';
 import 'user_profile_screen.dart';
@@ -53,6 +56,11 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     return g.admins.map((e) => e.toString()).contains(me.id);
   }
 
+  void _snack(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
   // ── Edit name / description ──
 
   Future<void> _editGroupInfo() async {
@@ -89,7 +97,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       });
       await _load();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      _snack('$e');
     }
   }
 
@@ -109,10 +117,51 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           );
       AvatarCache.instance.bust(widget.groupId);
       await _load();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Group photo updated')));
+      _snack('Group photo updated');
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      _snack('$e');
     }
+  }
+
+  // ── Invite link (admins) ──
+
+  Future<void> _setInvite({required bool enabled, bool rotate = false}) async {
+    try {
+      final updated = await context.read<AuthController>().api.setGroupInvite(
+            groupId: widget.groupId,
+            enabled: enabled,
+            rotate: rotate,
+          );
+      if (!mounted) return;
+      setState(() => group = updated);
+      await context.read<ChatController>().refreshGroup(widget.groupId);
+      if (!enabled) {
+        _snack('Invite link disabled');
+      } else if (rotate) {
+        _snack('Invite code rotated');
+      } else {
+        _snack('Invite link enabled');
+      }
+    } catch (e) {
+      _snack('$e');
+    }
+  }
+
+  Future<void> _copyInviteCode() async {
+    final code = group?.inviteCode;
+    if (code == null || code.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: code));
+    _snack('Invite code copied');
+  }
+
+  Future<void> _shareInvite() async {
+    final g = group;
+    final code = g?.inviteCode;
+    if (g == null || code == null || code.isEmpty) return;
+    await Share.share(
+      'Join "${g.name}" on QuantumChat with invite code: $code',
+      subject: 'QuantumChat group invite',
+    );
   }
 
   // ── Promote / Demote admin ──
@@ -126,7 +175,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       }
       await _load();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      _snack('$e');
     }
   }
 
@@ -157,7 +206,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       Navigator.of(context).popUntil((r) => r.isFirst);
       await context.read<ChatController>().refreshInbox();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      _snack('$e');
     }
   }
 
@@ -191,36 +240,128 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       await context.read<AuthController>().api.addGroupMembers(widget.groupId, [picked.id]);
       await _load();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      _snack('$e');
     }
   }
 
   Future<void> _removeMember(QcUser member) async {
     final me = context.read<AuthController>().user!;
+    final colors = context.read<ThemeController>().colors;
+    final leaving = member.id == me.id;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(member.id == me.id ? 'Leave group?' : 'Remove member?'),
-        content: Text(member.id == me.id ? 'You will leave this group.' : 'Remove ${member.title}?'),
+        backgroundColor: colors.surface,
+        title: Text(
+          leaving ? 'Leave group?' : 'Remove member?',
+          style: TextStyle(color: colors.textPrimary),
+        ),
+        content: Text(
+          leaving
+              ? 'You will leave this group and stop receiving its messages.'
+              : 'Remove ${member.title} from this group?',
+          style: TextStyle(color: colors.textSecondary),
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(
+              leaving ? 'Leave group' : 'Remove',
+              style: TextStyle(color: colors.error),
+            ),
+          ),
         ],
       ),
     );
     if (ok != true || !mounted) return;
     try {
-      await context.read<AuthController>().api.removeGroupMember(widget.groupId, member.id);
-      if (member.id == me.id && mounted) {
+      final api = context.read<AuthController>().api;
+      if (leaving) {
+        await api.leaveGroup(widget.groupId, me.id);
+        if (!mounted) return;
         context.read<ChatController>().closeThread();
         Navigator.of(context).popUntil((r) => r.isFirst);
         await context.read<ChatController>().refreshInbox();
         return;
       }
+      await api.removeGroupMember(widget.groupId, member.id);
       await _load();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      _snack('$e');
     }
+  }
+
+  Future<void> _leaveGroup() async {
+    final me = context.read<AuthController>().user!;
+    await _removeMember(me);
+  }
+
+  Widget _inviteLinkSection(QcColors colors) {
+    final g = group!;
+    final enabled = g.inviteEnabled && g.inviteCode != null && g.inviteCode!.isNotEmpty;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Invite link', style: TextStyle(color: colors.accentCyan, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 8),
+        Text(
+          enabled
+              ? 'Anyone with this code can join the group.'
+              : 'Invite link is off. Enable it to let people join with a code.',
+          style: TextStyle(color: colors.textMuted, fontSize: 13),
+        ),
+        if (enabled) ...[
+          const SizedBox(height: 10),
+          SelectableText(
+            g.inviteCode!,
+            style: TextStyle(
+              color: colors.textPrimary,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _copyInviteCode,
+                icon: const Icon(Icons.copy, size: 16),
+                label: const Text('Copy code'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _shareInvite,
+                icon: const Icon(Icons.share_outlined, size: 16),
+                label: const Text('Share'),
+              ),
+            ],
+          ),
+        ],
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            if (!enabled)
+              QcPrimaryButton(label: 'Enable', onPressed: () => _setInvite(enabled: true))
+            else ...[
+              OutlinedButton(
+                onPressed: () => _setInvite(enabled: false),
+                child: const Text('Disable'),
+              ),
+              OutlinedButton(
+                onPressed: () => _setInvite(enabled: true, rotate: true),
+                child: const Text('Rotate'),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
   }
 
   @override
@@ -296,6 +437,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                           ),
                         ),
                         const SizedBox(height: 16),
+                        if (admin) _inviteLinkSection(colors),
                         if (admin)
                           QcPrimaryButton(label: 'Add member', onPressed: _addMember),
                         const SizedBox(height: 16),
@@ -328,7 +470,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                   ),
                                 if (m.id == me.id || admin)
                                   IconButton(
-                                    tooltip: m.id == me.id ? 'Leave' : 'Remove',
+                                    tooltip: m.id == me.id ? 'Leave group' : 'Remove member',
                                     onPressed: () => _removeMember(m),
                                     icon: Icon(
                                       m.id == me.id ? Icons.logout : Icons.person_remove_outlined,
@@ -342,7 +484,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                         const SizedBox(height: 24),
                         OutlinedButton(
                           style: OutlinedButton.styleFrom(foregroundColor: colors.error, side: BorderSide(color: colors.error)),
-                          onPressed: () => _removeMember(me),
+                          onPressed: _leaveGroup,
                           child: const Text('Leave group'),
                         ),
                         if (admin) ...[

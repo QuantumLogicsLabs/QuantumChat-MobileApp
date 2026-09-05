@@ -6,24 +6,29 @@ Native Flutter messenger for Android and iOS. It talks to the same QuantumChat b
 
 - Landing, register, login, 2FA (login + settings setup/disable), forgot password
 - `keys.txt` backup after signup, and an unlock gate (import keys or generate a new pool)
-- Conversation list (All / Unread / Groups / Friends) with presence
-- Friend request accept / decline
+- Conversation list (All / Unread / Groups / Friends) with presence; archive / hide chats
+- Friend request accept / decline; friend add / remove from profiles
 - Encrypted DMs and group chats, realtime Socket.IO, typing, read/delivery ticks
-- Reactions, reply, edit, delete, copy, in-thread message search
+- Forward, pin, star, date separators, message info (DM timestamps + group delivered/read per member), edit history
+- Reactions, reply, edit, delete, copy, in-thread message search, emoji picker, @mentions
+- View-once media and disappearing messages
 - Attachments (gallery / camera / files) via init→upload→finalize (same as web)
 - GIF picker (backend Giphy proxy)
-- Mute, clear chat, block / unblock
-- Stories rail (post image story, view)
-- Group info: members, add member, leave / remove
-- Settings: profile, avatar, privacy, password, 2FA, themes (Dark / Light / Eyecare + dreamy FX), API URL, logout
+- Mute, clear chat, block / unblock, report user
+- Stories rail (post image story, view, react, delete)
+- Status text and user profiles
+- Group info: edit name/description, admin promote/demote, group photo, members, add/remove, leave with confirmation, join via invite code, admin invite-link enable/disable/rotate/copy/share
+- Settings: profile, avatar upload + remove photo, privacy, password, 2FA, notification prefs, wallpapers, active sessions, language selector, themes (Dark / Light / Eyecare + dreamy FX), API URL, logout
 
 ## Not in this cut yet (website has them)
 
 - Voice / video calls and meetings (WebRTC)
 - Conversation vault / key vault
 - Native push (FCM / APNs) — backend push today is web VAPID-oriented
-- QuantumAI, polls / events, full i18n, per-chat wallpapers
+- QuantumAI, polls / events, activity / screen time
+- Device linking QR
 - Sealed (AES-GCM) stories — mobile posts unsealed image stories for now
+- Full i18n string catalogs (language preference is stored; UI strings are still English)
 
 ## Prerequisites
 

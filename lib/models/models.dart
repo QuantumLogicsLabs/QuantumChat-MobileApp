@@ -177,6 +177,9 @@ class QcGroup {
     this.admins = const [],
     this.hasPhoto = false,
     this.visibility = 'private',
+    this.joinPolicy = 'invite',
+    this.inviteEnabled = false,
+    this.inviteCode,
     this.updatedAt,
     this.createdAt,
   });
@@ -188,13 +191,26 @@ class QcGroup {
   final List<String> admins;
   final bool hasPhoto;
   final String visibility;
+  /// private: invite · public: open | request
+  final String joinPolicy;
+  final bool inviteEnabled;
+  final String? inviteCode;
   final DateTime? updatedAt;
   final DateTime? createdAt;
 
   bool get isPublic => visibility == 'public';
 
+  bool isAdmin(String userId) {
+    if (admins.isNotEmpty) return admins.contains(userId);
+    return false;
+  }
+
   factory QcGroup.fromJson(Map<String, dynamic> json) {
     DateTime? parse(dynamic v) => v is String ? DateTime.tryParse(v) : null;
+    final code = json['inviteCode']?.toString();
+    final visibility = json['visibility'] as String? ?? 'private';
+    var joinPolicy = json['joinPolicy'] as String? ?? 'invite';
+    if (visibility == 'public' && joinPolicy != 'request') joinPolicy = 'open';
     return QcGroup(
       id: '${json['id'] ?? json['_id']}',
       name: json['name'] as String? ?? 'Group',
@@ -205,9 +221,89 @@ class QcGroup {
       }).toList(),
       admins: (json['admins'] as List<dynamic>? ?? []).map((e) => '$e').toList(),
       hasPhoto: json['hasPhoto'] == true,
-      visibility: json['visibility'] as String? ?? 'private',
+      visibility: visibility,
+      joinPolicy: joinPolicy,
+      inviteEnabled: json['inviteEnabled'] == true,
+      inviteCode: (code != null && code.isNotEmpty && code != 'null') ? code : null,
       updatedAt: parse(json['updatedAt']),
       createdAt: parse(json['createdAt']),
+    );
+  }
+}
+
+/// Lightweight public group from GET /groups/discover.
+class DiscoverGroup {
+  const DiscoverGroup({
+    required this.id,
+    required this.name,
+    this.description = '',
+    this.memberCount = 0,
+    this.hasPhoto = false,
+    this.joinPolicy = 'open',
+    this.joinRequestPending = false,
+  });
+
+  final String id;
+  final String name;
+  final String description;
+  final int memberCount;
+  final bool hasPhoto;
+  final String joinPolicy;
+  final bool joinRequestPending;
+
+  bool get requiresRequest => joinPolicy == 'request';
+
+  factory DiscoverGroup.fromJson(Map<String, dynamic> json) {
+    return DiscoverGroup(
+      id: '${json['id'] ?? json['_id']}',
+      name: json['name'] as String? ?? 'Group',
+      description: json['description'] as String? ?? '',
+      memberCount: (json['memberCount'] as num?)?.toInt() ?? 0,
+      hasPhoto: json['hasPhoto'] == true,
+      joinPolicy: json['joinPolicy'] == 'request' ? 'request' : 'open',
+      joinRequestPending: json['joinRequestPending'] == true,
+    );
+  }
+
+  DiscoverGroup copyWith({bool? joinRequestPending}) {
+    return DiscoverGroup(
+      id: id,
+      name: name,
+      description: description,
+      memberCount: memberCount,
+      hasPhoto: hasPhoto,
+      joinPolicy: joinPolicy,
+      joinRequestPending: joinRequestPending ?? this.joinRequestPending,
+    );
+  }
+}
+
+class GroupJoinRequest {
+  const GroupJoinRequest({
+    required this.id,
+    required this.user,
+    this.status = 'pending',
+    this.createdAt,
+  });
+
+  final String id;
+  final QcUser user;
+  final String status;
+  final DateTime? createdAt;
+
+  factory GroupJoinRequest.fromJson(Map<String, dynamic> json) {
+    final userRaw = json['user'];
+    final QcUser user;
+    if (userRaw is Map<String, dynamic>) {
+      user = QcUser.fromJson(userRaw);
+    } else {
+      user = QcUser(id: '$userRaw', username: 'user');
+    }
+    return GroupJoinRequest(
+      id: '${json['id'] ?? json['_id']}',
+      user: user,
+      status: json['status'] as String? ?? 'pending',
+      createdAt: json['createdAt'] is String ? DateTime.tryParse(json['createdAt'] as String) : null,
     );
   }
 }
@@ -254,6 +350,12 @@ class AttachmentMeta {
 
   bool get isImage => mimetype.startsWith('image/');
   bool get isGif => mimetype == 'image/gif' || filename.toLowerCase().endsWith('.gif');
+  bool get isAudio {
+    final name = filename.toLowerCase();
+    return mimetype.startsWith('audio/') ||
+        name.startsWith('voice-note') ||
+        RegExp(r'\.(webm|ogg|mp3|m4a|wav|aac)$').hasMatch(name);
+  }
 
   factory AttachmentMeta.fromJson(Map<String, dynamic>? json, {String? groupKey, String? groupNonce}) {
     if (json == null) {
@@ -377,6 +479,54 @@ class EditHistoryEntry {
   final String? text;
 }
 
+class PollVote {
+  const PollVote({required this.userId, required this.optionIndex});
+  final String userId;
+  final int optionIndex;
+
+  factory PollVote.fromJson(Map<String, dynamic> json) {
+    return PollVote(
+      userId: '${json['user'] ?? json['userId'] ?? ''}',
+      optionIndex: (json['optionIndex'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class PollData {
+  const PollData({required this.question, required this.options});
+  final String question;
+  final List<String> options;
+
+  factory PollData.fromPayload(Map<String, dynamic> payload) {
+    return PollData(
+      question: payload['question'] as String? ?? 'Poll',
+      options: (payload['options'] as List<dynamic>? ?? []).map((e) => '$e').toList(),
+    );
+  }
+}
+
+class EventData {
+  const EventData({
+    required this.title,
+    this.when,
+    this.location = '',
+    this.notes = '',
+  });
+  final String title;
+  final String? when;
+  final String location;
+  final String notes;
+
+  factory EventData.fromPayload(Map<String, dynamic> payload) {
+    return EventData(
+      title: payload['title'] as String? ?? 'Event',
+      when: payload['when'] as String?,
+      location: payload['where'] as String? ?? payload['location'] as String? ?? '',
+      notes: payload['notes'] as String? ?? '',
+    );
+  }
+}
+
 class ChatMessage {
   ChatMessage({
     required this.id,
@@ -404,6 +554,10 @@ class ChatMessage {
     this.viewOnceOpenedBy,
     this.viewOnceMediaKind,
     this.mentionedUserIds = const [],
+    this.pollData,
+    this.pollVotes = const [],
+    this.eventData,
+    this.announcementBody,
   });
 
   final String id;
@@ -431,10 +585,17 @@ class ChatMessage {
   String? viewOnceOpenedBy;
   String? viewOnceMediaKind;
   final List<String> mentionedUserIds;
+  PollData? pollData;
+  List<PollVote> pollVotes;
+  EventData? eventData;
+  String? announcementBody;
 
   bool isMine(String myId) => from == myId;
   bool get hasMedia => attachment != null || kind == 'file' || kind == 'image' || kind == 'gif';
   bool get isDisappearing => expiresAt != null;
+  bool get isPoll => kind == 'poll' || pollData != null;
+  bool get isEvent => kind == 'event' || eventData != null;
+  bool get isAnnouncement => kind == 'announcement' || announcementBody != null;
 }
 
 enum ConversationType { dm, group }
