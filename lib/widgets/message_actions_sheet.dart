@@ -18,13 +18,14 @@ Future<String?> showMessageActionsSheet({
     context: context,
     backgroundColor: colors.surface,
     showDragHandle: true,
+    isScrollControlled: true,
     builder: (ctx) {
       final preview = getMessagePreviewText(message.text, isMine: mine);
       final previewLine = preview.isNotEmpty
           ? preview
           : (message.attachment != null ? '📎 Attachment' : 'Message');
       return SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -76,6 +77,12 @@ Future<String?> showMessageActionsSheet({
                 label: message.isStarred ? 'Unstar' : 'Star',
                 colors: colors,
                 onTap: () => Navigator.pop(ctx, 'star'),
+              ),
+              _ActionTile(
+                icon: message.isImportant ? Icons.label_important : Icons.label_important_outline,
+                label: message.isImportant ? 'Remove from Important' : 'Mark as Important',
+                colors: colors,
+                onTap: () => Navigator.pop(ctx, 'important'),
               ),
               if (isGroup)
                 _ActionTile(

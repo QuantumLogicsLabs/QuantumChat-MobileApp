@@ -486,7 +486,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                     child: Container(
                                       padding: const EdgeInsets.all(4),
                                       decoration: BoxDecoration(color: colors.accent, shape: BoxShape.circle),
-                                      child: const Icon(Icons.camera_alt, size: 14, color: Colors.white),
+                                      child: Icon(Icons.camera_alt, size: 14, color: colors.onAccent),
                                     ),
                                   ),
                               ],

@@ -52,6 +52,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? setupSecret;
   String? setupOtpauth;
   List<QcUser> blocked = [];
+  final _searchCtrl = TextEditingController();
+  String _searchQuery = '';
 
   @override
   void initState() {
@@ -70,6 +72,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    _searchCtrl.dispose();
     displayName.dispose();
     bio.dispose();
     statusText.dispose();
@@ -292,438 +295,561 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final colors = theme.colors;
     final user = auth.user!;
 
+    final groups = <_SettingsGroup>[
+        _SettingsGroup(
+          title: 'Profile',
+          keywords: const ['name', 'display name', 'bio', 'status', 'birthday', 'date of birth', 'timezone', 'photo', 'avatar', 'urdu', 'arabic', 'persian', 'hindi', 'chinese', 'russian', 'scripts'],
+          children: [
+              TextField(controller: displayName, decoration: const InputDecoration(hintText: 'Display name')),
+              const SizedBox(height: 10),
+              TextField(controller: bio, maxLines: 3, decoration: const InputDecoration(hintText: 'Bio')),
+              const SizedBox(height: 10),
+              TextField(controller: statusText, decoration: const InputDecoration(hintText: 'Status (e.g. Available, Busy…)')),
+              const SizedBox(height: 10),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('Date of birth', style: TextStyle(color: colors.textPrimary)),
+                subtitle: Text(
+                  dateOfBirth == null
+                      ? 'Not set — used for birthday reminders'
+                      : '${dateOfBirth!.year}-${dateOfBirth!.month.toString().padLeft(2, '0')}-${dateOfBirth!.day.toString().padLeft(2, '0')}',
+                  style: TextStyle(color: colors.textMuted),
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (dateOfBirth != null)
+                      IconButton(
+                        icon: Icon(Icons.clear, color: colors.textMuted),
+                        onPressed: () => setState(() => dateOfBirth = null),
+                      ),
+                    IconButton(
+                      icon: Icon(Icons.calendar_today, color: colors.accent),
+                      onPressed: _pickDob,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 4),
+              InputDecorator(
+                decoration: const InputDecoration(labelText: 'Timezone'),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    isExpanded: true,
+                    value: timezoneOptions.contains(timezone) ? timezone : 'UTC',
+                    items: timezoneOptions
+                        .map((tz) => DropdownMenuItem(value: tz, child: Text(tz, overflow: TextOverflow.ellipsis)))
+                        .toList(),
+                    onChanged: (v) {
+                      if (v != null) setState(() => timezone = v);
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text('Name in other scripts', style: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              Text(
+                'Shown when friends use Urdu, Arabic, Hindi, etc.',
+                style: TextStyle(color: colors.textMuted, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              TextField(controller: translitUr, decoration: const InputDecoration(hintText: 'Urdu name')),
+              const SizedBox(height: 8),
+              TextField(controller: translitAr, decoration: const InputDecoration(hintText: 'Arabic name')),
+              const SizedBox(height: 8),
+              TextField(controller: translitFa, decoration: const InputDecoration(hintText: 'Persian name')),
+              const SizedBox(height: 8),
+              TextField(controller: translitHi, decoration: const InputDecoration(hintText: 'Hindi name')),
+              const SizedBox(height: 8),
+              TextField(controller: translitZh, decoration: const InputDecoration(hintText: 'Chinese name')),
+              const SizedBox(height: 8),
+              TextField(controller: translitRu, decoration: const InputDecoration(hintText: 'Russian name')),
+              const SizedBox(height: 10),
+              QcPrimaryButton(label: 'Save profile', onPressed: _saveProfile),
+          ],
+        ),
+        _SettingsGroup(
+          title: 'Appearance',
+          keywords: const ['theme', 'dark', 'light', 'eyecare', 'dreamy', 'fun', 'mode', 'app icon', 'logo', 'color', 'colour'],
+          children: [
+              Text(
+                'Current look: ${theme.id.label}',
+                style: TextStyle(color: colors.textMuted, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              _buildAppearanceCard(
+                colors: colors,
+                title: 'Display mode',
+                hint: 'Everyday light, dark, or eyecare',
+                child: _ModePill(
+                  selected: theme.id,
+                  colors: colors,
+                  onSelect: theme.setTheme,
+                ),
+              ),
+              const SizedBox(height: 12),
+              _buildAppearanceCard(
+                colors: colors,
+                title: 'Dreamy themes',
+                hint: theme.isFunTheme ? '${theme.id.label} is active' : 'Pick a decorative skin',
+                badge: 'FX',
+                child: _FunThemeGrid(
+                  selected: theme.id,
+                  colors: colors,
+                  onSelect: theme.setTheme,
+                ),
+              ),
+              const SizedBox(height: 12),
+              _buildAppearanceCard(
+                colors: colors,
+                title: 'App icon',
+                hint: 'In-app logo color',
+                badge: 'Icon',
+                softBadge: true,
+                child: _AppIconGrid(
+                  selectedId: theme.appIcon.id,
+                  colors: colors,
+                  onSelect: theme.setAppIcon,
+                ),
+              ),
+          ],
+        ),
+        _SettingsGroup(
+          title: 'Privacy',
+          keywords: const ['last seen', 'online', 'read receipts', 'who can message', 'stories', 'birthday', 'screenshot'],
+          children: [
+              _PrivacyTile(
+                label: 'Last seen',
+                value: user.privacy.lastSeen,
+                onChanged: (v) => _savePrivacy('lastSeen', v),
+                colors: colors,
+              ),
+              _PrivacyTile(
+                label: 'Online status',
+                value: user.privacy.online,
+                onChanged: (v) => _savePrivacy('online', v),
+                colors: colors,
+              ),
+              _PrivacyTile(
+                label: 'Read receipts',
+                value: user.privacy.readReceipts,
+                onChanged: (v) => _savePrivacy('readReceipts', v),
+                colors: colors,
+              ),
+              _PrivacyTile(
+                label: 'Who can message you',
+                value: user.privacy.whoCanMessage,
+                onChanged: (v) => _savePrivacy('whoCanMessage', v),
+                colors: colors,
+              ),
+              _PrivacyTile(
+                label: 'Stories',
+                value: user.privacy.story,
+                onChanged: (v) => _savePrivacy('story', v),
+                colors: colors,
+              ),
+              _PrivacyTile(
+                label: 'Birthday visibility',
+                value: user.privacy.birthdayVisibility,
+                onChanged: (v) => _savePrivacy('birthdayVisibility', v),
+                colors: colors,
+                options: const ['everyone', 'friends', 'onlyMe'],
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('Screenshot protection', style: TextStyle(color: colors.textPrimary)),
+                subtitle: Text(
+                  'When on, other people cannot screenshot chats with you (Android).',
+                  style: TextStyle(color: colors.textMuted, fontSize: 12),
+                ),
+                value: user.privacy.screenshotProtection,
+                activeThumbColor: colors.accent,
+                onChanged: (v) => _savePrivacy('screenshotProtection', v),
+              ),
+          ],
+        ),
+        _SettingsGroup(
+          title: 'Blocked users',
+          keywords: const ['block', 'unblock'],
+          children: [
+              if (blocked.isEmpty)
+                Text('No blocked users', style: TextStyle(color: colors.textMuted))
+              else
+                ...blocked.map(
+                  (u) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: UserAvatar(name: u.title, userId: u.id, hasAvatar: u.hasAvatar, size: 36),
+                    title: Text(u.title),
+                    trailing: TextButton(
+                      onPressed: () async {
+                        await auth.api.unblockUser(u.id);
+                        await _loadBlocked();
+                      },
+                      child: const Text('Unblock'),
+                    ),
+                  ),
+                ),
+          ],
+        ),
+        _SettingsGroup(
+          title: 'Password',
+          keywords: const ['change password', 'current password', 'new password'],
+          children: [
+              TextField(
+                controller: currentPassword,
+                obscureText: true,
+                decoration: const InputDecoration(hintText: 'Current password'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: newPassword,
+                obscureText: true,
+                decoration: const InputDecoration(hintText: 'New password'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton(onPressed: _changePassword, child: const Text('Change password')),
+          ],
+        ),
+        _SettingsGroup(
+          title: 'Two-factor authentication',
+          keywords: const ['2fa', 'totp', 'authenticator', 'code', 'security'],
+          children: [
+              Text(
+                user.totpEnabled
+                    ? '2FA is enabled on your account.'
+                    : 'Add an authenticator app for extra login security.',
+                style: TextStyle(color: colors.textMuted, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              if (!user.totpEnabled) ...[
+                OutlinedButton(onPressed: _setup2fa, child: const Text('Set up 2FA')),
+                if (setupSecret != null) ...[
+                  const SizedBox(height: 8),
+                  SelectableText('Secret: $setupSecret', style: TextStyle(color: colors.textSecondary, fontSize: 12)),
+                  if (setupOtpauth != null)
+                    SelectableText(setupOtpauth!, style: TextStyle(color: colors.textMuted, fontSize: 11)),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: totpCode,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(hintText: '6-digit code'),
+                  ),
+                  const SizedBox(height: 8),
+                  QcPrimaryButton(label: 'Enable 2FA', onPressed: _enable2fa),
+                ],
+              ] else ...[
+                TextField(
+                  controller: disablePassword,
+                  obscureText: true,
+                  decoration: const InputDecoration(hintText: 'Password'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: totpCode,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(hintText: 'Authenticator code'),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(foregroundColor: colors.error),
+                  onPressed: _disable2fa,
+                  child: const Text('Disable 2FA'),
+                ),
+              ],
+          ],
+        ),
+        _SettingsGroup(
+          title: 'Server',
+          keywords: const ['api', 'url', 'backend', 'quantumai', 'ai'],
+          children: [
+              Text(
+                'Point this app at the QuantumChat backend. Local backend on Android emulator: http://10.0.2.2:5000',
+                style: TextStyle(color: colors.textMuted, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              TextField(controller: apiBase, decoration: const InputDecoration(hintText: 'https://quantum-chat-backend-six.vercel.app')),
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: () async {
+                  await auth.setApiBase(apiBase.text.trim());
+                  setState(() => status = 'API URL saved. Log out and back in if you were already connected.');
+                },
+                child: const Text('Save API URL'),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'QuantumAI companion API (…/api/v1). Local Android emulator: http://10.0.2.2:5001/api/v1',
+                style: TextStyle(color: colors.textMuted, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: aiApiBase,
+                decoration: const InputDecoration(hintText: 'https://ai.quantumlogicslimited.com/api/v1'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: () async {
+                  final url = aiApiBase.text.trim();
+                  if (url.isEmpty) {
+                    await auth.storage.clearAiApiBase();
+                    aiApiBase.text = AppConfig.defaultAiApiBase;
+                  } else {
+                    await auth.storage.setAiApiBase(url);
+                  }
+                  setState(() => status = 'QuantumAI API URL saved.');
+                },
+                child: const Text('Save QuantumAI URL'),
+              ),
+          ],
+        ),
+        _SettingsGroup(
+          title: 'Messages',
+          keywords: const ['starred', 'important', 'saved', 'birthday calendar', 'notifications', 'highlights', 'profile', 'story archive', 'wallpaper', 'language'],
+          children: [
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.star, color: colors.accentCyan),
+                title: Text('Starred & Important', style: TextStyle(color: colors.textPrimary)),
+                trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const StarredMessagesScreen()),
+                  );
+                },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.cake_outlined, color: colors.accentCyan),
+                title: Text('Birthday calendar', style: TextStyle(color: colors.textPrimary)),
+                trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const BirthdayCalendarScreen()),
+                  );
+                },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.notifications_outlined, color: colors.accentCyan),
+                title: Text('Notifications', style: TextStyle(color: colors.textPrimary)),
+                trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationSettingsScreen())),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.person_outline, color: colors.accentCyan),
+                title: Text('My profile & highlights', style: TextStyle(color: colors.textPrimary)),
+                trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+                onTap: () {
+                  final id = context.read<AuthController>().user?.id;
+                  if (id == null) return;
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => UserProfileScreen(userId: id)));
+                },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.inventory_2_outlined, color: colors.accentCyan),
+                title: Text('Story archive', style: TextStyle(color: colors.textPrimary)),
+                trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StoryArchiveScreen())),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.wallpaper_outlined, color: colors.accentCyan),
+                title: Text('Chat Wallpaper', style: TextStyle(color: colors.textPrimary)),
+                trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WallpaperScreen())),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.language, color: colors.accentCyan),
+                title: Text('Language', style: TextStyle(color: colors.textPrimary)),
+                trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+                onTap: _showLanguagePicker,
+              ),
+          ],
+        ),
+        _SettingsGroup(
+          title: 'Security',
+          keywords: const ['sessions', 'devices', 'encryption', 'keys', 'log out', 'logout'],
+          children: [
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.devices_outlined, color: colors.accentCyan),
+                title: Text('Active Sessions', style: TextStyle(color: colors.textPrimary)),
+                trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SessionsScreen())),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('Encryption keys', style: TextStyle(color: colors.textPrimary)),
+                subtitle: Text(
+                  'Private keys stay on this device. Logout does not delete them.',
+                  style: TextStyle(color: colors.textMuted),
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(foregroundColor: colors.error, side: BorderSide(color: colors.error)),
+                onPressed: () async {
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      backgroundColor: colors.surface,
+                      title: Text('Log out?', style: TextStyle(color: colors.textPrimary)),
+                      content: Text(
+                        'You will need to sign in again. Encryption keys stay on this phone.',
+                        style: TextStyle(color: colors.textSecondary),
+                      ),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                        TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Log out')),
+                      ],
+                    ),
+                  );
+                  if (ok == true && context.mounted) {
+                    context.read<ChatController>().stop();
+                    await auth.logout();
+                    if (context.mounted) Navigator.of(context).popUntil((r) => r.isFirst);
+                  }
+                },
+                child: const Text('Log out'),
+              ),
+          ],
+        ),
+    ];
+    final searching = _searchQuery.trim().isNotEmpty;
+    final visibleGroups = searching ? groups.where((g) => g.matches(_searchQuery)).toList() : groups;
+
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         children: [
-          Center(
-            child: Stack(
-              children: [
-                UserAvatar(name: user.title, userId: user.id, hasAvatar: user.hasAvatar, size: 72),
-                Positioned(
-                  right: 0,
-                  bottom: 0,
-                  child: Material(
-                    color: colors.accent,
-                    shape: const CircleBorder(),
-                    child: InkWell(
-                      customBorder: const CircleBorder(),
-                      onTap: _changeAvatar,
-                      child: const Padding(
-                        padding: EdgeInsets.all(6),
-                        child: Icon(Icons.camera_alt, size: 16, color: Colors.white),
+          if (!searching) ...[
+            Center(
+              child: Stack(
+                children: [
+                  UserAvatar(name: user.title, userId: user.id, hasAvatar: user.hasAvatar, size: 72),
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: Material(
+                      color: colors.accent,
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: _changeAvatar,
+                        child: Padding(
+                          padding: const EdgeInsets.all(6),
+                          child: Icon(Icons.camera_alt, size: 16, color: colors.onAccent),
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          Center(child: Text('@${user.username}', style: TextStyle(color: colors.textMuted))),
-          if (user.hasAvatar) ...[
             const SizedBox(height: 8),
-            Center(
-              child: TextButton(
-                onPressed: _removeAvatar,
-                child: Text('Remove photo', style: TextStyle(color: colors.error)),
-              ),
-            ),
-          ],
-          if (status != null) ...[
-            const SizedBox(height: 8),
-            Text(status!, textAlign: TextAlign.center, style: TextStyle(color: colors.accentCyan)),
-          ],
-          const SizedBox(height: 20),
-          _Section(title: 'Profile', colors: colors),
-          TextField(controller: displayName, decoration: const InputDecoration(hintText: 'Display name')),
-          const SizedBox(height: 10),
-          TextField(controller: bio, maxLines: 3, decoration: const InputDecoration(hintText: 'Bio')),
-          const SizedBox(height: 10),
-          TextField(controller: statusText, decoration: const InputDecoration(hintText: 'Status (e.g. Available, Busy…)')),
-          const SizedBox(height: 10),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text('Date of birth', style: TextStyle(color: colors.textPrimary)),
-            subtitle: Text(
-              dateOfBirth == null
-                  ? 'Not set — used for birthday reminders'
-                  : '${dateOfBirth!.year}-${dateOfBirth!.month.toString().padLeft(2, '0')}-${dateOfBirth!.day.toString().padLeft(2, '0')}',
-              style: TextStyle(color: colors.textMuted),
-            ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (dateOfBirth != null)
-                  IconButton(
-                    icon: Icon(Icons.clear, color: colors.textMuted),
-                    onPressed: () => setState(() => dateOfBirth = null),
-                  ),
-                IconButton(
-                  icon: Icon(Icons.calendar_today, color: colors.accent),
-                  onPressed: _pickDob,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 4),
-          InputDecorator(
-            decoration: const InputDecoration(labelText: 'Timezone'),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                isExpanded: true,
-                value: timezoneOptions.contains(timezone) ? timezone : 'UTC',
-                items: timezoneOptions
-                    .map((tz) => DropdownMenuItem(value: tz, child: Text(tz, overflow: TextOverflow.ellipsis)))
-                    .toList(),
-                onChanged: (v) {
-                  if (v != null) setState(() => timezone = v);
-                },
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text('Name in other scripts', style: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
-          Text(
-            'Shown when friends use Urdu, Arabic, Hindi, etc.',
-            style: TextStyle(color: colors.textMuted, fontSize: 12),
-          ),
-          const SizedBox(height: 8),
-          TextField(controller: translitUr, decoration: const InputDecoration(hintText: 'Urdu name')),
-          const SizedBox(height: 8),
-          TextField(controller: translitAr, decoration: const InputDecoration(hintText: 'Arabic name')),
-          const SizedBox(height: 8),
-          TextField(controller: translitFa, decoration: const InputDecoration(hintText: 'Persian name')),
-          const SizedBox(height: 8),
-          TextField(controller: translitHi, decoration: const InputDecoration(hintText: 'Hindi name')),
-          const SizedBox(height: 8),
-          TextField(controller: translitZh, decoration: const InputDecoration(hintText: 'Chinese name')),
-          const SizedBox(height: 8),
-          TextField(controller: translitRu, decoration: const InputDecoration(hintText: 'Russian name')),
-          const SizedBox(height: 10),
-          QcPrimaryButton(label: 'Save profile', onPressed: _saveProfile),
-          const SizedBox(height: 24),
-          _Section(title: 'Appearance', colors: colors),
-          Text(
-            'Current look: ${theme.id.label}',
-            style: TextStyle(color: colors.textMuted, fontSize: 13),
-          ),
-          const SizedBox(height: 12),
-          _buildAppearanceCard(
-            colors: colors,
-            title: 'Display mode',
-            hint: 'Everyday light, dark, or eyecare',
-            child: _ModePill(
-              selected: theme.id,
-              colors: colors,
-              onSelect: theme.setTheme,
-            ),
-          ),
-          const SizedBox(height: 12),
-          _buildAppearanceCard(
-            colors: colors,
-            title: 'Dreamy themes',
-            hint: theme.isFunTheme ? '${theme.id.label} is active' : 'Pick a decorative skin',
-            badge: 'FX',
-            child: _FunThemeGrid(
-              selected: theme.id,
-              colors: colors,
-              onSelect: theme.setTheme,
-            ),
-          ),
-          const SizedBox(height: 12),
-          _buildAppearanceCard(
-            colors: colors,
-            title: 'App icon',
-            hint: 'In-app logo color',
-            badge: 'Icon',
-            softBadge: true,
-            child: _AppIconGrid(
-              selectedId: theme.appIcon.id,
-              colors: colors,
-              onSelect: theme.setAppIcon,
-            ),
-          ),
-          const SizedBox(height: 24),
-          _Section(title: 'Privacy', colors: colors),
-          _PrivacyTile(
-            label: 'Last seen',
-            value: user.privacy.lastSeen,
-            onChanged: (v) => _savePrivacy('lastSeen', v),
-            colors: colors,
-          ),
-          _PrivacyTile(
-            label: 'Online status',
-            value: user.privacy.online,
-            onChanged: (v) => _savePrivacy('online', v),
-            colors: colors,
-          ),
-          _PrivacyTile(
-            label: 'Read receipts',
-            value: user.privacy.readReceipts,
-            onChanged: (v) => _savePrivacy('readReceipts', v),
-            colors: colors,
-          ),
-          _PrivacyTile(
-            label: 'Who can message you',
-            value: user.privacy.whoCanMessage,
-            onChanged: (v) => _savePrivacy('whoCanMessage', v),
-            colors: colors,
-          ),
-          _PrivacyTile(
-            label: 'Stories',
-            value: user.privacy.story,
-            onChanged: (v) => _savePrivacy('story', v),
-            colors: colors,
-          ),
-          _PrivacyTile(
-            label: 'Birthday visibility',
-            value: user.privacy.birthdayVisibility,
-            onChanged: (v) => _savePrivacy('birthdayVisibility', v),
-            colors: colors,
-            options: const ['everyone', 'friends', 'onlyMe'],
-          ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text('Screenshot protection', style: TextStyle(color: colors.textPrimary)),
-            subtitle: Text(
-              'When on, other people cannot screenshot chats with you (Android).',
-              style: TextStyle(color: colors.textMuted, fontSize: 12),
-            ),
-            value: user.privacy.screenshotProtection,
-            activeThumbColor: colors.accent,
-            onChanged: (v) => _savePrivacy('screenshotProtection', v),
-          ),
-          const SizedBox(height: 24),
-          _Section(title: 'Blocked users', colors: colors),
-          if (blocked.isEmpty)
-            Text('No blocked users', style: TextStyle(color: colors.textMuted))
-          else
-            ...blocked.map(
-              (u) => ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: UserAvatar(name: u.title, userId: u.id, hasAvatar: u.hasAvatar, size: 36),
-                title: Text(u.title),
-                trailing: TextButton(
-                  onPressed: () async {
-                    await auth.api.unblockUser(u.id);
-                    await _loadBlocked();
-                  },
-                  child: const Text('Unblock'),
+            Center(child: Text('@${user.username}', style: TextStyle(color: colors.textMuted))),
+            if (user.hasAvatar) ...[
+              const SizedBox(height: 8),
+              Center(
+                child: TextButton(
+                  onPressed: _removeAvatar,
+                  child: Text('Remove photo', style: TextStyle(color: colors.error)),
                 ),
               ),
-            ),
-          const SizedBox(height: 24),
-          _Section(title: 'Password', colors: colors),
-          TextField(
-            controller: currentPassword,
-            obscureText: true,
-            decoration: const InputDecoration(hintText: 'Current password'),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: newPassword,
-            obscureText: true,
-            decoration: const InputDecoration(hintText: 'New password'),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton(onPressed: _changePassword, child: const Text('Change password')),
-          const SizedBox(height: 24),
-          _Section(title: 'Two-factor authentication', colors: colors),
-          Text(
-            user.totpEnabled
-                ? '2FA is enabled on your account.'
-                : 'Add an authenticator app for extra login security.',
-            style: TextStyle(color: colors.textMuted, fontSize: 13),
-          ),
-          const SizedBox(height: 10),
-          if (!user.totpEnabled) ...[
-            OutlinedButton(onPressed: _setup2fa, child: const Text('Set up 2FA')),
-            if (setupSecret != null) ...[
-              const SizedBox(height: 8),
-              SelectableText('Secret: $setupSecret', style: TextStyle(color: colors.textSecondary, fontSize: 12)),
-              if (setupOtpauth != null)
-                SelectableText(setupOtpauth!, style: TextStyle(color: colors.textMuted, fontSize: 11)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: totpCode,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(hintText: '6-digit code'),
-              ),
-              const SizedBox(height: 8),
-              QcPrimaryButton(label: 'Enable 2FA', onPressed: _enable2fa),
             ],
-          ] else ...[
-            TextField(
-              controller: disablePassword,
-              obscureText: true,
-              decoration: const InputDecoration(hintText: 'Password'),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: totpCode,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(hintText: 'Authenticator code'),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton(
-              style: OutlinedButton.styleFrom(foregroundColor: colors.error),
-              onPressed: _disable2fa,
-              child: const Text('Disable 2FA'),
-            ),
+            if (status != null) ...[
+              const SizedBox(height: 8),
+              Text(status!, textAlign: TextAlign.center, style: TextStyle(color: colors.accentCyan)),
+            ],
+            const SizedBox(height: 20),
           ],
-          const SizedBox(height: 24),
-          _Section(title: 'Server', colors: colors),
-          Text(
-            'Point this app at the QuantumChat backend. Local backend on Android emulator: http://10.0.2.2:5000',
-            style: TextStyle(color: colors.textMuted, fontSize: 12),
-          ),
-          const SizedBox(height: 8),
-          TextField(controller: apiBase, decoration: const InputDecoration(hintText: 'https://quantum-chat-backend-six.vercel.app')),
-          const SizedBox(height: 10),
-          OutlinedButton(
-            onPressed: () async {
-              await auth.setApiBase(apiBase.text.trim());
-              setState(() => status = 'API URL saved. Log out and back in if you were already connected.');
-            },
-            child: const Text('Save API URL'),
+          _SettingsSearchField(
+            controller: _searchCtrl,
+            colors: colors,
+            onChanged: (v) => setState(() => _searchQuery = v),
           ),
           const SizedBox(height: 16),
-          Text(
-            'QuantumAI companion API (…/api/v1). Local Android emulator: http://10.0.2.2:5001/api/v1',
-            style: TextStyle(color: colors.textMuted, fontSize: 12),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: aiApiBase,
-            decoration: const InputDecoration(hintText: 'https://ai.quantumlogicslimited.com/api/v1'),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton(
-            onPressed: () async {
-              final url = aiApiBase.text.trim();
-              if (url.isEmpty) {
-                await auth.storage.clearAiApiBase();
-                aiApiBase.text = AppConfig.defaultAiApiBase;
-              } else {
-                await auth.storage.setAiApiBase(url);
-              }
-              setState(() => status = 'QuantumAI API URL saved.');
-            },
-            child: const Text('Save QuantumAI URL'),
-          ),
-          const SizedBox(height: 24),
-          _Section(title: 'Messages', colors: colors),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.star, color: colors.accentCyan),
-            title: Text('Starred Messages', style: TextStyle(color: colors.textPrimary)),
-            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const StarredMessagesScreen()),
-              );
-            },
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.cake_outlined, color: colors.accentCyan),
-            title: Text('Birthday calendar', style: TextStyle(color: colors.textPrimary)),
-            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const BirthdayCalendarScreen()),
-              );
-            },
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.notifications_outlined, color: colors.accentCyan),
-            title: Text('Notifications', style: TextStyle(color: colors.textPrimary)),
-            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationSettingsScreen())),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.person_outline, color: colors.accentCyan),
-            title: Text('My profile & highlights', style: TextStyle(color: colors.textPrimary)),
-            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
-            onTap: () {
-              final id = context.read<AuthController>().user?.id;
-              if (id == null) return;
-              Navigator.push(context, MaterialPageRoute(builder: (_) => UserProfileScreen(userId: id)));
-            },
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.inventory_2_outlined, color: colors.accentCyan),
-            title: Text('Story archive', style: TextStyle(color: colors.textPrimary)),
-            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StoryArchiveScreen())),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.wallpaper_outlined, color: colors.accentCyan),
-            title: Text('Chat Wallpaper', style: TextStyle(color: colors.textPrimary)),
-            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WallpaperScreen())),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.language, color: colors.accentCyan),
-            title: Text('Language', style: TextStyle(color: colors.textPrimary)),
-            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
-            onTap: _showLanguagePicker,
-          ),
-          const SizedBox(height: 24),
-          _Section(title: 'Security', colors: colors),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.devices_outlined, color: colors.accentCyan),
-            title: Text('Active Sessions', style: TextStyle(color: colors.textPrimary)),
-            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SessionsScreen())),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text('Encryption keys', style: TextStyle(color: colors.textPrimary)),
-            subtitle: Text(
-              'Private keys stay on this device. Logout does not delete them.',
-              style: TextStyle(color: colors.textMuted),
-            ),
-          ),
-          const SizedBox(height: 8),
-          OutlinedButton(
-            style: OutlinedButton.styleFrom(foregroundColor: colors.error, side: BorderSide(color: colors.error)),
-            onPressed: () async {
-              final ok = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  backgroundColor: colors.surface,
-                  title: Text('Log out?', style: TextStyle(color: colors.textPrimary)),
-                  content: Text(
-                    'You will need to sign in again. Encryption keys stay on this phone.',
-                    style: TextStyle(color: colors.textSecondary),
+          if (visibleGroups.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 48),
+              child: Column(
+                children: [
+                  Icon(Icons.search_off, size: 48, color: colors.textMuted),
+                  const SizedBox(height: 10),
+                  Text(
+                    'No settings match "${_searchQuery.trim()}"',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: colors.textSecondary, fontWeight: FontWeight.w600),
                   ),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                    TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Log out')),
-                  ],
-                ),
-              );
-              if (ok == true && context.mounted) {
-                context.read<ChatController>().stop();
-                await auth.logout();
-                if (context.mounted) Navigator.of(context).popUntil((r) => r.isFirst);
-              }
-            },
-            child: const Text('Log out'),
-          ),
+                  const SizedBox(height: 4),
+                  Text('Try a different word, like "theme" or "privacy".',
+                      style: TextStyle(color: colors.textMuted, fontSize: 12)),
+                ],
+              ),
+            ),
+          for (final (i, g) in visibleGroups.indexed) ...[
+            if (i > 0) const SizedBox(height: 24),
+            _Section(title: g.title, colors: colors),
+            ...g.children,
+          ],
         ],
+      ),
+    );
+  }
+}
+
+/// One searchable block of the settings list (website SettingsModal search parity).
+class _SettingsGroup {
+  const _SettingsGroup({required this.title, required this.keywords, required this.children});
+
+  final String title;
+  final List<String> keywords;
+  final List<Widget> children;
+
+  bool matches(String query) {
+    final terms = query.toLowerCase().split(RegExp(r'\s+')).where((t) => t.isNotEmpty);
+    final haystack = '${title.toLowerCase()} ${keywords.join(' ')}';
+    return terms.every(haystack.contains);
+  }
+}
+
+class _SettingsSearchField extends StatelessWidget {
+  const _SettingsSearchField({required this.controller, required this.colors, required this.onChanged});
+
+  final TextEditingController controller;
+  final QcColors colors;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: controller,
+      builder: (context, value, _) => TextField(
+        controller: controller,
+        onChanged: onChanged,
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          hintText: 'Search settings',
+          prefixIcon: Icon(Icons.search, color: colors.textMuted),
+          suffixIcon: value.text.isEmpty
+              ? null
+              : IconButton(
+                  tooltip: 'Clear search',
+                  icon: Icon(Icons.close, color: colors.textMuted),
+                  onPressed: () {
+                    controller.clear();
+                    onChanged('');
+                  },
+                ),
+        ),
       ),
     );
   }
@@ -801,7 +927,7 @@ Widget _buildAppearanceCard({
                 child: Text(
                   badge,
                   style: TextStyle(
-                    color: softBadge ? colors.accent : colors.bubbleMineFg,
+                    color: softBadge ? colors.accent : colors.onAccent,
                     fontSize: 10,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 0.4,
@@ -891,7 +1017,7 @@ class _ModeButton extends StatelessWidget {
             child: Icon(
               icon,
               size: 20,
-              color: active ? colors.bubbleMineFg : colors.textSecondary,
+              color: active ? colors.onAccent : colors.textSecondary,
             ),
           ),
         ),
@@ -1047,7 +1173,7 @@ class _AppIconGrid extends StatelessWidget {
                               shape: BoxShape.circle,
                               border: Border.all(color: colors.surface, width: 1.5),
                             ),
-                            child: Icon(Icons.check, size: 11, color: colors.bubbleMineFg),
+                            child: Icon(Icons.check, size: 11, color: colors.onAccent),
                           ),
                         ),
                     ],

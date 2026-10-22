@@ -43,9 +43,9 @@ extension QcThemeIdX on QcThemeId {
   String get hint {
     switch (this) {
       case QcThemeId.dark:
-        return 'Classic navy';
+        return 'Rose gold leather';
       case QcThemeId.light:
-        return 'Bright & clean';
+        return 'Warm champagne';
       case QcThemeId.eyecare:
         return 'Warm amber';
       case QcThemeId.moonveil:
@@ -92,11 +92,11 @@ extension QcThemeIdX on QcThemeId {
       case QcThemeId.dreamcloud:
         return const [Color(0xFFD946AF), Color(0xFFE879C9), Color(0xFFD8B4FE)];
       case QcThemeId.light:
-        return const [Color(0xFF2563EB), Color(0xFF3B82F6), Color(0xFF38BDF8)];
+        return const [Color(0xFF8A4A52), Color(0xFFA45D61), Color(0xFFE8B9AE)];
       case QcThemeId.eyecare:
         return const [Color(0xFFD97706), Color(0xFFF59E0B), Color(0xFFFBBF24)];
       case QcThemeId.dark:
-        return const [Color(0xFF2563EB), Color(0xFF3B82F6), Color(0xFF22D3EE)];
+        return const [Color(0xFF8A4A52), Color(0xFFE8B9AE), Color(0xFFF6E6D8)];
     }
   }
 
@@ -144,7 +144,10 @@ class QcColors {
     required this.success,
     required this.overlay,
     required this.isDark,
-  });
+    Color? onAccent,
+    this.bubbleMineGradient,
+    this.bubbleTheirsBorder,
+  }) : _onAccent = onAccent;
 
   final Color body;
   final Color surface;
@@ -167,53 +170,79 @@ class QcColors {
   final Color success;
   final Color overlay;
   final bool isDark;
+  final Color? _onAccent;
 
+  /// Optional gradient for outgoing bubbles (website `--bubble-mine-bg`).
+  final Gradient? bubbleMineGradient;
+
+  /// Optional hairline around incoming bubbles (website `--bubble-theirs-border`).
+  final Color? bubbleTheirsBorder;
+
+  /// Text / icon color on top of a solid [accent] fill (website `--accent-contrast`).
+  Color get onAccent => _onAccent ?? bubbleMineFg;
+
+  /// Website dark tokens — leather canvas, rose gold accent, champagne text.
   static const dark = QcColors(
-    body: Color(0xFF07131F),
-    surface: Color(0xFF0D1B2A),
-    elevated: Color(0xFF16263D),
-    input: Color(0xD916263D),
-    chat: Color(0xFF102033),
-    border: Color(0xFF223248),
-    textPrimary: Color(0xFFF1F5F9),
-    textSecondary: Color(0xFF94A3B8),
-    textMuted: Color(0xFF64748B),
-    accent: Color(0xFF3B82F6),
-    accentHover: Color(0xFF2563EB),
-    accentCyan: Color(0xFF22D3EE),
-    accentMuted: Color(0x283B82F6),
-    bubbleMine: Color(0xFF2563EB),
-    bubbleMineFg: Color(0xFFFFFFFF),
-    bubbleTheirs: Color(0xFF1A2D45),
-    bubbleTheirsFg: Color(0xFFF1F5F9),
+    body: Color(0xFF1A1214),
+    surface: Color(0xFF231819),
+    elevated: Color(0xFF2D2022),
+    input: Color(0xD92D2022),
+    chat: Color(0xFF1E1517),
+    border: Color(0xFF3D2C2E),
+    textPrimary: Color(0xFFF6E6D8),
+    textSecondary: Color(0xFFD9BFB3),
+    textMuted: Color(0xFFB39A95),
+    accent: Color(0xFFE8B9AE),
+    accentHover: Color(0xFFECD2C4),
+    accentCyan: Color(0xFFF6E6D8),
+    accentMuted: Color(0x24E8B9AE),
+    bubbleMine: Color(0xFF8A4A52),
+    bubbleMineFg: Color(0xFFFFF5EE),
+    bubbleTheirs: Color(0xFF33252A),
+    bubbleTheirsFg: Color(0xFFF6E6D8),
     error: Color(0xFFEF4444),
     success: Color(0xFF22C55E),
-    overlay: Color(0xB807131F),
+    overlay: Color(0xB81A1214),
     isDark: true,
+    onAccent: Color(0xFF2D1A1C),
+    bubbleMineGradient: LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [Color(0xFFA45D61), Color(0xFF8A4A52)],
+    ),
+    bubbleTheirsBorder: Color(0xFF4A3539),
   );
 
+  /// Website light tokens — champagne base, deep mauve-rose accent.
   static const light = QcColors(
-    body: Color(0xFFF4F9FF),
-    surface: Color(0xFFFFFFFF),
-    elevated: Color(0xFFF8FBFF),
-    input: Color(0xEBFFFFFF),
-    chat: Color(0xFFF8FBFF),
-    border: Color(0xFFE2E8F0),
-    textPrimary: Color(0xFF1E293B),
-    textSecondary: Color(0xFF64748B),
-    textMuted: Color(0xFF94A3B8),
-    accent: Color(0xFF3B82F6),
-    accentHover: Color(0xFF2563EB),
-    accentCyan: Color(0xFF38BDF8),
-    accentMuted: Color(0x1F3B82F6),
-    bubbleMine: Color(0xFF2563EB),
+    body: Color(0xFFFBF4EE),
+    surface: Color(0xFFFDF8F3),
+    elevated: Color(0xFFFFFAF6),
+    input: Color(0xEBFFFAF6),
+    chat: Color(0xFFFBF2EA),
+    border: Color(0xFFECD9CC),
+    textPrimary: Color(0xFF2D1A1C),
+    textSecondary: Color(0xFF5A4146),
+    textMuted: Color(0xFF75605A),
+    accent: Color(0xFF8A4A52),
+    accentHover: Color(0xFF733D44),
+    accentCyan: Color(0xFFA65F63),
+    accentMuted: Color(0x1F8A4A52),
+    bubbleMine: Color(0xFF8A4A52),
     bubbleMineFg: Color(0xFFFFFFFF),
-    bubbleTheirs: Color(0xFFE2EAF6),
-    bubbleTheirsFg: Color(0xFF0F172A),
+    bubbleTheirs: Color(0xFFF3E0D3),
+    bubbleTheirsFg: Color(0xFF2D1A1C),
     error: Color(0xFFEF4444),
     success: Color(0xFF22C55E),
-    overlay: Color(0x660F172A),
+    overlay: Color(0x592D1A1C),
     isDark: false,
+    onAccent: Color(0xFFFFFFFF),
+    bubbleMineGradient: LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [Color(0xFF8A4A52), Color(0xFFA45D61)],
+    ),
+    bubbleTheirsBorder: Color(0xFFAD8370),
   );
 
   static const eyecare = QcColors(
@@ -444,7 +473,7 @@ class QcTheme {
       colorScheme: ColorScheme(
         brightness: scheme,
         primary: c.accent,
-        onPrimary: c.bubbleMineFg,
+        onPrimary: c.onAccent,
         secondary: c.accentCyan,
         onSecondary: c.body,
         error: c.error,
@@ -489,7 +518,7 @@ class QcTheme {
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: c.accent,
-          foregroundColor: c.bubbleMineFg,
+          foregroundColor: c.onAccent,
           minimumSize: const Size.fromHeight(48),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
@@ -503,7 +532,7 @@ class QcTheme {
           if (states.contains(WidgetState.selected)) return c.accent;
           return Colors.transparent;
         }),
-        checkColor: WidgetStateProperty.all(c.bubbleMineFg),
+        checkColor: WidgetStateProperty.all(c.onAccent),
         side: BorderSide(color: c.border),
       ),
       chipTheme: ChipThemeData(
@@ -511,7 +540,7 @@ class QcTheme {
         selectedColor: c.accent,
         disabledColor: c.elevated,
         labelStyle: TextStyle(color: c.textSecondary),
-        secondaryLabelStyle: TextStyle(color: c.bubbleMineFg),
+        secondaryLabelStyle: TextStyle(color: c.onAccent),
         side: BorderSide(color: c.border),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),

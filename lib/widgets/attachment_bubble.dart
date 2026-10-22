@@ -99,10 +99,16 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
       );
     }
     if (_bytes != null && att.isAudio) {
+      final chat = context.read<ChatController>();
+      final message = widget.message;
+      final mine = message.isMine(chat.me.id);
       return _VoicePlayer(
         bytes: _bytes!,
         filename: att.filename,
         colors: widget.colors,
+        // Sender sees a lit mic once the other side has played it (website parity).
+        playedBadge: mine ? message.listenedBy.any((id) => id != chat.me.id) : null,
+        onFirstPlay: mine ? null : () => chat.markVoiceListened(message),
       );
     }
     return _FileChip(att: att, colors: widget.colors);
@@ -114,11 +120,17 @@ class _VoicePlayer extends StatefulWidget {
     required this.bytes,
     required this.filename,
     required this.colors,
+    this.playedBadge,
+    this.onFirstPlay,
   });
 
   final Uint8List bytes;
   final String filename;
   final QcColors colors;
+
+  /// null = don't show; true/false = listened state for the sender.
+  final bool? playedBadge;
+  final VoidCallback? onFirstPlay;
 
   @override
   State<_VoicePlayer> createState() => _VoicePlayerState();
@@ -126,6 +138,7 @@ class _VoicePlayer extends StatefulWidget {
 
 class _VoicePlayerState extends State<_VoicePlayer> {
   final AudioPlayer _player = AudioPlayer();
+  bool _reportedPlay = false;
   Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
   bool _ready = false;
@@ -188,6 +201,10 @@ class _VoicePlayerState extends State<_VoicePlayer> {
     if (_playing) {
       await _player.pause();
     } else {
+      if (!_reportedPlay) {
+        _reportedPlay = true;
+        widget.onFirstPlay?.call();
+      }
       await _player.play();
     }
   }
@@ -256,9 +273,22 @@ class _VoicePlayerState extends State<_VoicePlayer> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  _fmt(display),
-                  style: TextStyle(color: colors.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
+                Row(
+                  children: [
+                    Text(
+                      _fmt(display),
+                      style: TextStyle(color: colors.textMuted, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                    if (widget.playedBadge != null) ...[
+                      const SizedBox(width: 6),
+                      Icon(
+                        Icons.mic,
+                        size: 13,
+                        color: widget.playedBadge! ? colors.accentCyan : colors.textMuted,
+                        semanticLabel: widget.playedBadge! ? 'Played' : 'Not played yet',
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),

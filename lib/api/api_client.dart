@@ -490,6 +490,28 @@ class ApiClient {
     await post('/messages/$userId/read');
   }
 
+  Future<void> markGroupRead(String groupId) async {
+    await post('/groups/$groupId/messages/read');
+  }
+
+  Future<void> markVoiceListened(String messageId) async {
+    await post('/messages/$messageId/listened');
+  }
+
+  /// Returns `{messages: [...], entries: [{messageId, markedAt}]}`.
+  Future<Map<String, dynamic>> getImportantMessages() async {
+    final body = await get('/messages/important');
+    return Map<String, dynamic>.from(body['data'] as Map? ?? const {});
+  }
+
+  Future<void> markImportant(String messageId) async {
+    await post('/messages/$messageId/important');
+  }
+
+  Future<void> unmarkImportant(String messageId) async {
+    await delete('/messages/$messageId/important');
+  }
+
   Future<Map<String, dynamic>> reactToMessage(String id, Map<String, dynamic> payload) async {
     final body = await post('/messages/$id/reactions', payload);
     return body['data'] as Map<String, dynamic>;
@@ -827,6 +849,12 @@ class ApiClient {
   }
 
   /// Pin a message in a group.
+  /// Command Center hub mutation: `{action: add|update|remove|toggle, section: tasks|links|notes, ...}`.
+  Future<QcGroup> updateCommandCenter(String groupId, Map<String, dynamic> payload) async {
+    final body = await patch('/groups/$groupId/command-center', payload);
+    return QcGroup.fromJson(body['data'] as Map<String, dynamic>);
+  }
+
   Future<void> pinGroupMessage(String groupId, String messageId) async {
     await post('/groups/$groupId/pins/$messageId');
   }

@@ -256,7 +256,7 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> {
                       selectedColor: hasRequests ? const Color(0xFFE11D48) : colors.accent,
                       labelStyle: TextStyle(
                         color: selected
-                            ? Colors.white
+                            ? (hasRequests ? Colors.white : colors.onAccent)
                             : hasRequests
                                 ? const Color(0xFFE11D48)
                                 : colors.textSecondary,
