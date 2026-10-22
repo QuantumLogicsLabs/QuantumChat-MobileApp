@@ -61,6 +61,8 @@ class QcUser {
     this.transliteratedNames = const {},
     this.birthday,
     this.birthdayLocked = false,
+    this.requestStatus,
+    this.requestId,
   });
 
   final String id;
@@ -88,6 +90,9 @@ class QcUser {
   /// Visible birthday for other profiles when privacy allows.
   final DateTime? birthday;
   final bool birthdayLocked;
+  /// Present on `/users/discover` candidates.
+  final String? requestStatus;
+  final String? requestId;
 
   String get title => displayName.isNotEmpty ? displayName : username;
 
@@ -146,6 +151,8 @@ class QcUser {
       transliteratedNames: translit,
       birthday: birthday ?? dob,
       birthdayLocked: json['birthdayLocked'] == true,
+      requestStatus: json['requestStatus'] as String?,
+      requestId: json['requestId']?.toString(),
     );
   }
 
@@ -220,6 +227,8 @@ class QcUser {
       transliteratedNames: transliteratedNames ?? this.transliteratedNames,
       birthday: birthday,
       birthdayLocked: birthdayLocked,
+      requestStatus: requestStatus,
+      requestId: requestId,
     );
   }
 }
@@ -456,12 +465,15 @@ class FriendRequest {
   final DateTime? createdAt;
 
   factory FriendRequest.fromJson(Map<String, dynamic> json) {
-    final fromRaw = json['from'];
+    // API returns `{ user: {...} }` for friend-requests; older shapes used `from`.
+    final fromRaw = json['user'] ?? json['from'];
     final QcUser from;
-    if (fromRaw is Map<String, dynamic>) {
-      from = QcUser.fromJson(fromRaw);
-    } else {
+    if (fromRaw is Map) {
+      from = QcUser.fromJson(Map<String, dynamic>.from(fromRaw));
+    } else if (fromRaw != null) {
       from = QcUser(id: '$fromRaw', username: 'user');
+    } else {
+      from = const QcUser(id: '', username: 'user');
     }
     return FriendRequest(
       id: '${json['id'] ?? json['_id']}',

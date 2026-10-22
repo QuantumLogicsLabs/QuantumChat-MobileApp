@@ -30,6 +30,8 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2"/>
+        <!-- Keep Impeller ON. Opting out forces legacy Skia, which paints a black
+             surface after the splash on many Android emulators / Flutter 3.27+. -->
     </application>
     <queries>
         <intent>
