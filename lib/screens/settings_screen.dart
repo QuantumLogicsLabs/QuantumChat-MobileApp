@@ -15,6 +15,7 @@ import '../widgets/avatar_cache.dart';
 import '../widgets/common.dart';
 import 'notification_settings_screen.dart';
 import 'sessions_screen.dart';
+import 'birthday_calendar_screen.dart';
 import 'starred_messages_screen.dart';
 import 'story_archive_screen.dart';
 import 'user_profile_screen.dart';
@@ -624,6 +625,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const StarredMessagesScreen()),
+              );
+            },
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.cake_outlined, color: colors.accentCyan),
+            title: Text('Birthday calendar', style: TextStyle(color: colors.textPrimary)),
+            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const BirthdayCalendarScreen()),
               );
             },
           ),

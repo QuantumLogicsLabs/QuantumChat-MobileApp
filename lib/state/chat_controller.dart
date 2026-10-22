@@ -26,6 +26,11 @@ class ChatController extends ChangeNotifier {
 
   List<QcUser> users = [];
   List<QcUser> friends = [];
+  /// Discoverable people who are not already friends (merged into All / New chat).
+  List<QcUser> discoverCandidates = [];
+  /// Public groups for the Discover filter (website parity).
+  List<DiscoverGroup> discoverGroups = [];
+  bool loadingDiscoverGroups = false;
   List<QcGroup> groups = [];
   List<Conversation> conversations = [];
   List<ChatMessage> messages = [];
@@ -41,6 +46,7 @@ class ChatController extends ChangeNotifier {
   bool sending = false;
   bool aiBusy = false;
   String? threadError;
+  String? inboxError;
   String? typingFrom;
   /// Per-conversation disappearing-message TTL in seconds (0 = off).
   int disappearSeconds = 0;
@@ -67,6 +73,7 @@ class ChatController extends ChangeNotifier {
     auth.onSocketConnected = _onSocketReady;
     _ensureSocketHandlers();
     _started = true;
+    if (filter == 'people') filter = 'discover';
     // Don't block UI startup on a full inbox round-trip.
     unawaited(refreshInbox());
     _pollTimer?.cancel();
@@ -384,37 +391,143 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool isFriendId(String id) {
+    if (friends.any((f) => f.id == id)) return true;
+    final mine = auth.user?.friends ?? const <String>[];
+    return mine.contains(id);
+  }
+
   Future<void> refreshInbox() async {
-    if (!auth.hasLocalKeyring) return;
+    // Still load people/friends without a local keyring so the home directory is never blank.
     if (_inboxRefreshInFlight) return;
     _inboxRefreshInFlight = true;
     loadingInbox = true;
+    inboxError = null;
     notifyListeners();
     try {
-      // Website-style light inbox: friends + one users page — never paginate the whole directory.
-      List<QcUser> loadedFriends = const [];
-      try {
-        loadedFriends = await auth.api.listFriends();
-      } catch (_) {}
-      final pageUsers = await auth.api.listUsers();
-      groups = await auth.api.listGroups();
-      await _refreshFriendRequests();
-      friends = loadedFriends;
+      var loadedFriends = <QcUser>[];
+      var pageUsers = <QcUser>[];
+      var pageGroups = <QcGroup>[];
+      var discovered = <QcUser>[];
+      Object? friendsErr;
+      Object? discoverErr;
+
+      // Parallel fetch — sequential calls were timing out on cold Vercel from the emulator.
+      await Future.wait([
+        () async {
+          try {
+            loadedFriends = await auth.api.listFriends();
+          } catch (e) {
+            friendsErr = e;
+            debugPrint('listFriends failed: $e');
+          }
+        }(),
+        () async {
+          try {
+            pageUsers = await auth.api.listUsers();
+          } catch (e) {
+            debugPrint('listUsers failed: $e');
+          }
+        }(),
+        () async {
+          try {
+            pageGroups = await auth.api.listGroups();
+          } catch (e) {
+            debugPrint('listGroups failed: $e');
+          }
+        }(),
+        () async {
+          try {
+            discovered = await auth.api.discoverUsers();
+          } catch (e) {
+            discoverErr = e;
+            debugPrint('discoverUsers failed: $e');
+          }
+        }(),
+        () async {
+          try {
+            await _refreshFriendRequests();
+          } catch (e) {
+            debugPrint('friendRequests failed: $e');
+          }
+        }(),
+      ]);
 
       final byId = <String, QcUser>{};
       for (final u in pageUsers) {
         byId[u.id] = u;
       }
-      for (final f in friends) {
+      for (final f in loadedFriends) {
         byId[f.id] = f;
       }
+      for (final u in discovered) {
+        byId.putIfAbsent(u.id, () => u);
+      }
+
+      // If /users/friends failed or returned empty, hydrate from auth.user.friends IDs.
+      if (loadedFriends.isEmpty) {
+        final friendIds = auth.user?.friends ?? const <String>[];
+        final hydrated = <QcUser>[];
+        for (final id in friendIds) {
+          final known = byId[id];
+          if (known != null) {
+            hydrated.add(known);
+            continue;
+          }
+          try {
+            final fetched = await auth.api.getUser(id);
+            byId[fetched.id] = fetched;
+            hydrated.add(fetched);
+          } catch (e) {
+            debugPrint('hydrate friend $id failed: $e');
+          }
+        }
+        loadedFriends = hydrated;
+        final err = friendsErr;
+        if (err != null && loadedFriends.isEmpty && friendIds.isNotEmpty) {
+          inboxError = err is ApiException ? err.message : 'Could not load friends';
+        }
+      }
+
+      // Bring back DMs that have local activity even if the peer wasn't on the users page.
+      for (final peerId in storage.listActiveDmPeerIds(me.id)) {
+        if (peerId == me.id || byId.containsKey(peerId)) continue;
+        try {
+          final fetched = await auth.api.getUser(peerId);
+          byId[fetched.id] = fetched;
+        } catch (e) {
+          debugPrint('hydrate activity peer $peerId failed: $e');
+        }
+      }
+
+      friends = loadedFriends;
+      groups = pageGroups;
       users = byId.values.toList();
       _mergeFriendProfiles();
+
+      if (discovered.isNotEmpty) {
+        discoverCandidates = discovered;
+      } else {
+        discoverCandidates = users
+            .where((u) => u.id != me.id && !isFriendId(u.id) && !u.isQuantumAi)
+            .toList();
+        final err = discoverErr;
+        if (discoverCandidates.isEmpty && err != null) {
+          inboxError ??= err is ApiException ? err.message : 'Could not load people directory';
+        }
+      }
+
+      debugPrint(
+        'inbox: friends=${friends.length} users=${users.length} '
+        'discover=${discoverCandidates.length} groups=${groups.length}',
+      );
       _rebuildConversations();
     } on ApiException catch (e) {
+      inboxError = e.message;
       threadError = e.message;
       notifyListeners();
     } catch (e) {
+      inboxError = '$e';
       threadError = '$e';
       notifyListeners();
     } finally {
@@ -424,6 +537,17 @@ class ChatController extends ChangeNotifier {
     }
     // Stories + QuantumAI after the list is visible — don't block the home screen.
     unawaited(_enrichInboxBackground());
+  }
+
+  Future<void> refreshDiscover({String q = ''}) async {
+    try {
+      discoverCandidates = await auth.api.discoverUsers(q: q);
+      if (filter == 'people') _rebuildConversations();
+      notifyListeners();
+    } on ApiException catch (e) {
+      inboxError = e.message;
+      notifyListeners();
+    }
   }
 
   Future<void> _enrichInboxBackground() async {
@@ -535,6 +659,14 @@ class ChatController extends ChangeNotifier {
 
   Future<void> searchPeople(String q) async {
     search = q;
+    if (filter == 'discover') {
+      if (q.trim().length < 2) {
+        unawaited(refreshDiscoverGroups());
+      } else {
+        unawaited(refreshDiscoverGroups(q: q.trim()));
+      }
+      return;
+    }
     if (q.trim().length < 2) {
       // Filter locally — do not reload every user page on each keystroke clear.
       _rebuildConversations();
@@ -543,16 +675,42 @@ class ChatController extends ChangeNotifier {
     try {
       users = await auth.api.listUsers(q: q.trim());
       groups = await auth.api.listGroups(q: q.trim());
+      try {
+        discoverCandidates = await auth.api.discoverUsers(q: q.trim());
+      } catch (_) {}
       _rebuildConversations();
     } on ApiException catch (e) {
+      inboxError = e.message;
       threadError = e.message;
       notifyListeners();
     }
   }
 
   void setFilter(String next) {
-    filter = next;
+    // Migrate old mobile-only "people" chip to website "discover".
+    final normalized = next == 'people' ? 'discover' : next;
+    filter = normalized;
+    if (normalized == 'discover') {
+      unawaited(refreshDiscoverGroups(q: search.trim()));
+    }
     _rebuildConversations();
+  }
+
+  Future<void> refreshDiscoverGroups({String q = ''}) async {
+    loadingDiscoverGroups = true;
+    notifyListeners();
+    try {
+      discoverGroups = await auth.api.discoverGroups(q: q);
+    } on ApiException catch (e) {
+      inboxError = e.message;
+      discoverGroups = [];
+    } catch (e) {
+      inboxError = '$e';
+      discoverGroups = [];
+    } finally {
+      loadingDiscoverGroups = false;
+      notifyListeners();
+    }
   }
 
   void _rebuildConversations() {
@@ -571,22 +729,36 @@ class ChatController extends ChangeNotifier {
     self.archived = storage.isChatArchived(me.id, self.key);
     items.add(self);
 
-    for (final u in users) {
+    // Website parity: All lists every known person (users + friends + discover).
+    final directory = <String, QcUser>{
+      for (final u in users) u.id: u,
+      for (final f in friends) f.id: f,
+      for (final u in discoverCandidates) u.id: u,
+    };
+
+    for (final u in directory.values) {
       if (u.id == me.id) continue;
       final key = storage.conversationKeyForUser(u.id);
       final activity = storage.getConversationActivity(me.id, key);
-      final isFriend = friends.any((f) => f.id == u.id);
+      final friend = isFriendId(u.id);
       final isAi = u.isQuantumAi;
-      final hasActivity = activity != null && activity.at.isNotEmpty;
-      // Don't turn the whole user directory into a chat list — that freezes the home screen.
-      if (!isFriend && !isAi && !hasActivity && search.trim().isEmpty) {
-        continue;
+      final status = u.requestStatus;
+      String? subtitle;
+      if (!friend && !isAi) {
+        if (status == 'pending_sent') {
+          subtitle = 'Request sent';
+        } else if (status == 'pending_received') {
+          subtitle = 'Wants to be friends';
+        } else if (u.statusText.isNotEmpty) {
+          subtitle = u.statusText;
+        }
       }
       items.add(Conversation(
         key: key,
         type: ConversationType.dm,
         id: u.id,
         title: u.title,
+        subtitle: subtitle,
         peer: u,
         unread: storage.isUnread(me.id, key, activity?.at, activity?.from),
         sortAt: activity?.at ?? u.lastLoginAt?.toIso8601String() ?? '',
@@ -594,6 +766,14 @@ class ChatController extends ChangeNotifier {
         archived: storage.isChatArchived(me.id, key),
       ));
     }
+
+    // Discover tab renders public groups in the home UI (not conversation rows).
+    if (filter == 'discover' || filter == 'people') {
+      conversations = const [];
+      notifyListeners();
+      return;
+    }
+
     for (final g in groups) {
       final key = storage.conversationKeyForGroup(g.id);
       final activity = storage.getConversationActivity(me.id, key);
@@ -638,7 +818,7 @@ class ChatController extends ChangeNotifier {
       if (filter == 'friends') {
         if (c.isSelfChat) return true;
         if (c.type != ConversationType.dm) return false;
-        return friends.any((f) => f.id == c.id);
+        return isFriendId(c.id);
       }
       if (q.isNotEmpty && !c.title.toLowerCase().contains(q) && !(c.subtitle ?? '').toLowerCase().contains(q)) {
         return false;

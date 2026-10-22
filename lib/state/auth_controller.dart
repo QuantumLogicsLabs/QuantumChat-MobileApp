@@ -32,30 +32,53 @@ class AuthController extends ChangeNotifier {
     api = ApiClient(baseUrl: AppConfig.apiUrl(apiBase), storage: storage);
     final stored = storage.getStoredUser();
     final token = storage.getToken();
+
+    // Always unlock the root gate first — never leave a black/native splash
+    // waiting on secure-storage or network.
     if (stored != null && token != null) {
-      user = QcUser.fromJson(stored);
-      await _refreshKeyringFlag();
       try {
-        final data = await api.me();
-        final fresh = data['user'] as Map<String, dynamic>? ?? data;
-        final nextToken = data['token'] as String? ?? token;
-        user = QcUser.fromJson(fresh);
-        await storage.saveSession(nextToken, user!.toJson(), storage.getSessionId());
-        await _refreshKeyringFlag();
-        _connectSocket(nextToken);
-      } on ApiException catch (e) {
-        if (e.status == 401) {
-          await logout();
-        } else {
-          _connectSocket(token);
-        }
-      } catch (_) {
-        // offline — keep cached session and connect with stored token
-        _connectSocket(token);
+        user = QcUser.fromJson(stored);
+      } catch (e, st) {
+        debugPrint('bootstrap: cached user corrupt, clearing session: $e\n$st');
+        storage.clearSession();
+        user = null;
       }
     }
     ready = true;
     notifyListeners();
+
+    if (user == null || token == null) return;
+
+    // Secure storage can hang on slow emulators — bound it so UI stays alive.
+    try {
+      await _refreshKeyringFlag().timeout(const Duration(seconds: 3));
+      notifyListeners();
+    } catch (_) {
+      hasLocalKeyring = false;
+      notifyListeners();
+    }
+
+    try {
+      final data = await api.me().timeout(const Duration(seconds: 8));
+      final fresh = data['user'] as Map<String, dynamic>? ?? data;
+      final nextToken = data['token'] as String? ?? token;
+      user = QcUser.fromJson(fresh);
+      await storage.saveSession(nextToken, user!.toJson(), storage.getSessionId());
+      try {
+        await _refreshKeyringFlag().timeout(const Duration(seconds: 3));
+      } catch (_) {}
+      _connectSocket(nextToken);
+      notifyListeners();
+    } on ApiException catch (e) {
+      if (e.status == 401) {
+        await logout();
+      } else {
+        _connectSocket(token);
+      }
+    } catch (_) {
+      // offline / timeout — keep cached session
+      _connectSocket(token);
+    }
   }
 
   Future<void> setApiBase(String url) async {

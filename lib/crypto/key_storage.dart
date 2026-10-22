@@ -55,8 +55,13 @@ class KeyStorage {
   KeyStorage._();
   static final KeyStorage instance = KeyStorage._();
 
+  // encryptedSharedPreferences can ANR / hang on some Android emulators.
+  // resetOnError recovers from a corrupt keystore instead of freezing startup.
   final FlutterSecureStorage _secure = const FlutterSecureStorage(
-    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+    aOptions: AndroidOptions(
+      encryptedSharedPreferences: true,
+      resetOnError: true,
+    ),
   );
 
   SharedPreferences? _prefs;
@@ -74,7 +79,9 @@ class KeyStorage {
   }
 
   Future<List<KeyringEntry>> getKeyring(String userId) async {
-    final raw = await _secure.read(key: _keyringPrefix + userId);
+    final raw = await _secure
+        .read(key: _keyringPrefix + userId)
+        .timeout(const Duration(seconds: 3), onTimeout: () => null);
     if (raw == null || raw.isEmpty) return [];
     final list = jsonDecode(raw) as List<dynamic>;
     return list.map((e) => KeyringEntry.fromJson(e as Map<String, dynamic>)).toList();
@@ -118,8 +125,12 @@ class KeyStorage {
   Future<bool> keyringMatchesPublishedKeys(String userId, List<String> serverPublicKeys) async {
     final serverKeys = serverPublicKeys.map((k) => k.toLowerCase()).where((k) => k.isNotEmpty).toList();
     if (serverKeys.isEmpty) return false;
+    // One secure-storage read — never N reads (that stalls emulators at launch).
+    final ring = await getKeyring(userId);
+    if (ring.isEmpty) return false;
+    final local = ring.map((k) => k.publicKey).toSet();
     for (final pub in serverKeys) {
-      if (await findSecretKeyForPublicKey(userId, pub) == null) return false;
+      if (!local.contains(pub)) return false;
     }
     return true;
   }
@@ -228,6 +239,18 @@ class KeyStorage {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Peer user ids that have local DM activity (`dm:<peerId>` keys).
+  List<String> listActiveDmPeerIds(String userId) {
+    final prefix = '$_activityPrefix${userId}_dm:';
+    final out = <String>[];
+    for (final key in prefs.getKeys()) {
+      if (!key.startsWith(prefix)) continue;
+      final peerId = key.substring(prefix.length);
+      if (peerId.isNotEmpty) out.add(peerId);
+    }
+    return out;
   }
 
   bool isUnread(String userId, String conversationKey, String? activityAt, String? activityFrom) {

@@ -46,7 +46,8 @@ class ApiClient {
   }
 
   Future<dynamic> get(String path, {Map<String, String>? query}) async {
-    final res = await http.get(_uri(path, query), headers: _headers()).timeout(const Duration(seconds: 20));
+    // Vercel cold starts + emulator networking often exceed 20s.
+    final res = await http.get(_uri(path, query), headers: _headers()).timeout(const Duration(seconds: 45));
     return _decode(res);
   }
 
@@ -229,7 +230,16 @@ class ApiClient {
   Future<List<QcUser>> listFriends() async {
     final body = await get('/users/friends');
     final data = body['data'] as List<dynamic>? ?? [];
-    return data.map((e) => QcUser.fromJson(e as Map<String, dynamic>)).toList();
+    return data.map((e) => QcUser.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+  }
+
+  /// Discoverable people who are not already friends (website Friends → Discover).
+  Future<List<QcUser>> discoverUsers({String q = ''}) async {
+    final query = <String, String>{};
+    if (q.trim().isNotEmpty) query['q'] = q.trim();
+    final body = await get('/users/discover', query: query.isEmpty ? null : query);
+    final data = body['data'] as List<dynamic>? ?? [];
+    return data.map((e) => QcUser.fromJson(Map<String, dynamic>.from(e as Map))).toList();
   }
 
   Future<List<FriendRequest>> friendRequestsIncoming() async {
@@ -270,8 +280,14 @@ class ApiClient {
     await post('/users/friend-requests/$id/decline');
   }
 
-  Future<Map<String, dynamic>?> lookupContact(String q) async {
-    final body = await get('/users/lookup', query: {'q': q});
+  Future<Map<String, dynamic>?> lookupContact({String? email, String? phone}) async {
+    final query = <String, String>{};
+    if (email != null && email.trim().isNotEmpty) query['email'] = email.trim().toLowerCase();
+    if (phone != null && phone.trim().isNotEmpty) query['phone'] = phone.trim();
+    if (query.isEmpty) {
+      throw ApiException('Provide an email or phone number');
+    }
+    final body = await get('/users/lookup', query: query);
     return body['data'] as Map<String, dynamic>?;
   }
 
@@ -284,7 +300,7 @@ class ApiClient {
   Future<void> blockUser(String id) async => post('/users/$id/block');
   Future<void> unblockUser(String id) async => delete('/users/$id/block');
 
-  Future<void> removeFriend(String userId) async => delete('/users/$userId/friend');
+  Future<void> removeFriend(String userId) async => delete('/users/friends/$userId');
 
   Future<QcUser> muteChat({String? peerId, String? groupId, String duration = 'always'}) async {
     final body = await post('/users/me/mute', {
