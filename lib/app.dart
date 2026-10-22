@@ -87,7 +87,7 @@ class _RootGateState extends State<_RootGate> {
 
     if (!auth.ready || !_allowHeavy) {
       return const Scaffold(
-        backgroundColor: Color(0xFF07131F),
+        backgroundColor: Color(0xFF1A1214),
         body: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -96,24 +96,24 @@ class _RootGateState extends State<_RootGate> {
                 TextSpan(
                   text: 'Quantum',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: Color(0xFFF6E6D8),
                     fontSize: 28,
                     fontWeight: FontWeight.w800,
                   ),
                   children: [
                     TextSpan(
                       text: 'Chat',
-                      style: TextStyle(color: Color(0xFF22D3EE)),
+                      style: TextStyle(color: Color(0xFFE8B9AE)),
                     ),
                   ],
                 ),
               ),
               SizedBox(height: 24),
-              CircularProgressIndicator(color: Color(0xFF22D3EE)),
+              CircularProgressIndicator(color: Color(0xFFE8B9AE)),
               SizedBox(height: 16),
               Text(
                 'Starting…',
-                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                style: TextStyle(color: Color(0xFFB39A95), fontSize: 13),
               ),
             ],
           ),

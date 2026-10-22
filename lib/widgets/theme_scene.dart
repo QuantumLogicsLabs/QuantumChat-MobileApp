@@ -444,8 +444,11 @@ BoxDecoration glassBubbleDecoration({
   required bool scenic,
 }) {
   if (!scenic) {
+    final theirsBorder = colors.bubbleTheirsBorder;
     return BoxDecoration(
       color: mine ? colors.bubbleMine : colors.bubbleTheirs,
+      gradient: mine ? colors.bubbleMineGradient : null,
+      border: !mine && theirsBorder != null ? Border.all(color: theirsBorder, width: 0.8) : null,
       borderRadius: BorderRadius.only(
         topLeft: const Radius.circular(18),
         topRight: const Radius.circular(18),

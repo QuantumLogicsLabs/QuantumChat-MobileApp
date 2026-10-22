@@ -247,6 +247,9 @@ class QcGroup {
     this.inviteCode,
     this.updatedAt,
     this.createdAt,
+    this.pinnedMessageIds = const [],
+    this.quantumAiEnabled = false,
+    this.commandCenter = const GroupCommandCenterData(),
   });
 
   final String id;
@@ -262,6 +265,11 @@ class QcGroup {
   final String? inviteCode;
   final DateTime? updatedAt;
   final DateTime? createdAt;
+  final List<String> pinnedMessageIds;
+  final bool quantumAiEnabled;
+
+  /// Shared tasks / links / notes hub (`PATCH /groups/:id/command-center`).
+  final GroupCommandCenterData commandCenter;
 
   bool get isPublic => visibility == 'public';
 
@@ -292,6 +300,83 @@ class QcGroup {
       inviteCode: (code != null && code.isNotEmpty && code != 'null') ? code : null,
       updatedAt: parse(json['updatedAt']),
       createdAt: parse(json['createdAt']),
+      pinnedMessageIds: (json['pinnedMessageIds'] as List<dynamic>? ?? []).map((e) => '$e').toList(),
+      quantumAiEnabled: (json['quantumAI'] is Map) && (json['quantumAI'] as Map)['enabled'] == true,
+      commandCenter: json['commandCenter'] is Map
+          ? GroupCommandCenterData.fromJson(Map<String, dynamic>.from(json['commandCenter'] as Map))
+          : const GroupCommandCenterData(),
+    );
+  }
+}
+
+class HubTask {
+  const HubTask({required this.id, required this.title, this.done = false, this.assigneeId, this.createdBy});
+
+  final String id;
+  final String title;
+  final bool done;
+  final String? assigneeId;
+  final String? createdBy;
+
+  factory HubTask.fromJson(Map<String, dynamic> j) => HubTask(
+        id: '${j['id']}',
+        title: j['title'] as String? ?? '',
+        done: j['done'] == true,
+        assigneeId: j['assigneeId']?.toString(),
+        createdBy: j['createdBy']?.toString(),
+      );
+}
+
+class HubLink {
+  const HubLink({required this.id, required this.title, required this.url, this.createdBy});
+
+  final String id;
+  final String title;
+  final String url;
+  final String? createdBy;
+
+  factory HubLink.fromJson(Map<String, dynamic> j) => HubLink(
+        id: '${j['id']}',
+        title: j['title'] as String? ?? 'Link',
+        url: j['url'] as String? ?? '',
+        createdBy: j['createdBy']?.toString(),
+      );
+}
+
+class HubNote {
+  const HubNote({required this.id, this.title = '', required this.body, this.updatedBy, this.updatedAt});
+
+  final String id;
+  final String title;
+  final String body;
+  final String? updatedBy;
+  final DateTime? updatedAt;
+
+  factory HubNote.fromJson(Map<String, dynamic> j) => HubNote(
+        id: '${j['id']}',
+        title: j['title'] as String? ?? '',
+        body: j['body'] as String? ?? '',
+        updatedBy: j['updatedBy']?.toString(),
+        updatedAt: j['updatedAt'] is String ? DateTime.tryParse(j['updatedAt'] as String) : null,
+      );
+}
+
+class GroupCommandCenterData {
+  const GroupCommandCenterData({this.tasks = const [], this.links = const [], this.notes = const []});
+
+  final List<HubTask> tasks;
+  final List<HubLink> links;
+  final List<HubNote> notes;
+
+  factory GroupCommandCenterData.fromJson(Map<String, dynamic> j) {
+    List<T> list<T>(String key, T Function(Map<String, dynamic>) f) => (j[key] as List<dynamic>? ?? [])
+        .whereType<Map>()
+        .map((e) => f(Map<String, dynamic>.from(e)))
+        .toList();
+    return GroupCommandCenterData(
+      tasks: list('tasks', HubTask.fromJson),
+      links: list('links', HubLink.fromJson),
+      notes: list('notes', HubNote.fromJson),
     );
   }
 }
@@ -699,6 +784,11 @@ class ChatMessage {
     this.quantumAI = false,
     this.streaming = false,
     this.failed = false,
+    this.timeCapsule = false,
+    this.unlocksAt,
+    this.locked = false,
+    this.listenedBy = const [],
+    this.isImportant = false,
   });
 
   final String id;
@@ -736,7 +826,22 @@ class ChatMessage {
   bool streaming;
   bool failed;
 
+  /// Time capsule (DM): content hidden from the recipient until [unlocksAt].
+  final bool timeCapsule;
+  final DateTime? unlocksAt;
+
+  /// Server redacted the content because the capsule hasn't opened yet.
+  final bool locked;
+
+  /// User ids that have played this voice message.
+  List<String> listenedBy;
+
+  /// Server-backed "Important" flag (`/messages/:id/important`).
+  bool isImportant;
+
   bool isMine(String myId) => from == myId;
+  bool get isCapsuleSealed =>
+      timeCapsule && unlocksAt != null && unlocksAt!.isAfter(DateTime.now());
   bool get hasMedia => attachment != null || kind == 'file' || kind == 'image' || kind == 'gif';
   bool get isDisappearing => expiresAt != null;
   bool get isPoll => kind == 'poll' || pollData != null;
