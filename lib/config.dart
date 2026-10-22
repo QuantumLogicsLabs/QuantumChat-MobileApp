@@ -24,6 +24,22 @@ class AppConfig {
     return productionAiFallback;
   }
 
+  /// TURN relay for live video, same as the website's VITE_TURN_* settings.
+  /// `TURN_URL` accepts a comma-separated list (e.g. UDP 3478, TLS 443).
+  static const _turnUrls = String.fromEnvironment('TURN_URL');
+  static const _turnUsername = String.fromEnvironment('TURN_USERNAME');
+  static const _turnCredential = String.fromEnvironment('TURN_CREDENTIAL');
+
+  static List<Map<String, dynamic>> get iceServers {
+    final turn = _turnUrls.split(',').map((u) => u.trim()).where((u) => u.isNotEmpty).toList();
+    return [
+      {
+        'urls': ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'],
+      },
+      if (turn.isNotEmpty) {'urls': turn, 'username': _turnUsername, 'credential': _turnCredential},
+    ];
+  }
+
   static String apiUrl(String base) => '${base.replaceAll(RegExp(r'/$'), '')}/api';
 
   static String signalUrl(String base) {

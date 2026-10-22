@@ -898,6 +898,57 @@ class Conversation {
   bool archived;
 }
 
+/// Public metadata for one live broadcast (`/api/live`). Video, comments and
+/// reactions never touch the server — see `state/live_controller.dart`.
+class LiveStreamInfo {
+  const LiveStreamInfo({
+    required this.id,
+    required this.status,
+    this.hostId = '',
+    this.hostName = '',
+    this.hostHasAvatar = false,
+    this.title = '',
+    this.audienceType = 'friends',
+    this.groupName,
+    this.startedAt,
+    this.viewerCount = 0,
+    this.isHost = false,
+  });
+
+  final String id;
+  final String status;
+  final String hostId;
+  final String hostName;
+  final bool hostHasAvatar;
+  final String title;
+  final String audienceType;
+  final String? groupName;
+  final DateTime? startedAt;
+  final int viewerCount;
+  final bool isHost;
+
+  bool get isLive => status == 'live';
+
+  factory LiveStreamInfo.fromJson(Map<String, dynamic> json) {
+    final host = json['host'] is Map ? Map<String, dynamic>.from(json['host'] as Map) : const <String, dynamic>{};
+    final group = json['group'] is Map ? Map<String, dynamic>.from(json['group'] as Map) : null;
+    final display = (host['displayName'] as String? ?? '').trim();
+    return LiveStreamInfo(
+      id: json['id']?.toString() ?? '',
+      status: json['status'] as String? ?? 'ended',
+      hostId: host['id']?.toString() ?? '',
+      hostName: display.isNotEmpty ? display : (host['username'] as String? ?? 'Someone'),
+      hostHasAvatar: host['hasAvatar'] == true,
+      title: json['title'] as String? ?? '',
+      audienceType: json['audienceType'] as String? ?? 'friends',
+      groupName: group?['name'] as String?,
+      startedAt: DateTime.tryParse(json['startedAt']?.toString() ?? ''),
+      viewerCount: (json['viewerCount'] as num?)?.toInt() ?? 0,
+      isHost: json['isHost'] == true,
+    );
+  }
+}
+
 class ApiException implements Exception {
   ApiException(this.message, {this.status});
   final String message;
