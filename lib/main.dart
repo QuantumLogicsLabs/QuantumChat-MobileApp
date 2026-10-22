@@ -8,6 +8,7 @@ import 'app.dart';
 import 'crypto/key_storage.dart';
 import 'state/auth_controller.dart';
 import 'state/chat_controller.dart';
+import 'state/live_controller.dart';
 import 'state/theme_controller.dart';
 
 Future<void> main() async {
@@ -48,6 +49,10 @@ Future<void> main() async {
             storage: storage,
             socket: socket,
           ),
+        ),
+        ChangeNotifierProvider(
+          lazy: true,
+          create: (_) => LiveController(auth: auth, storage: storage, socket: socket),
         ),
       ],
       child: const QuantumChatApp(),
