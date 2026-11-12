@@ -26,6 +26,11 @@ class ChatController extends ChangeNotifier {
 
   List<QcUser> users = [];
   List<QcUser> friends = [];
+  /// Discoverable people who are not already friends (merged into All / New chat).
+  List<QcUser> discoverCandidates = [];
+  /// Public groups for the Discover filter (website parity).
+  List<DiscoverGroup> discoverGroups = [];
+  bool loadingDiscoverGroups = false;
   List<QcGroup> groups = [];
   List<Conversation> conversations = [];
   List<ChatMessage> messages = [];
@@ -41,6 +46,7 @@ class ChatController extends ChangeNotifier {
   bool sending = false;
   bool aiBusy = false;
   String? threadError;
+  String? inboxError;
   String? typingFrom;
   /// Per-conversation disappearing-message TTL in seconds (0 = off).
   int disappearSeconds = 0;
@@ -58,6 +64,9 @@ class ChatController extends ChangeNotifier {
   bool _pollSyncInFlight = false;
   bool _inboxRefreshInFlight = false;
 
+  /// Message ids the user marked Important (server-backed, website parity).
+  final Set<String> importantIds = {};
+
   QcUser get me => auth.user!;
 
   /// Public notify for external callers (e.g. star/pin toggle from UI).
@@ -67,8 +76,10 @@ class ChatController extends ChangeNotifier {
     auth.onSocketConnected = _onSocketReady;
     _ensureSocketHandlers();
     _started = true;
+    if (filter == 'people') filter = 'discover';
     // Don't block UI startup on a full inbox round-trip.
     unawaited(refreshInbox());
+    unawaited(_loadImportantIds());
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       if (auth.user == null) return;
@@ -117,6 +128,12 @@ class ChatController extends ChangeNotifier {
     socket.on('friend:request:new', _handleFriendRequestNew);
     socket.on('friend:request:accepted', _handleFriendRequestAccepted);
     socket.on('message:view-once-opened', _handleViewOnceOpened);
+    socket.on('message:edited', _handleMessageReplaced);
+    socket.on('message:reaction', _handleMessageReplaced);
+    socket.on('message:deleted', _handleMessageRemoved);
+    socket.on('message:expired', _handleMessageRemoved);
+    socket.on('message:listened', _handleMessageListened);
+    socket.on('group:updated', _handleGroupUpdated);
   }
 
   void _removeSocketHandlers() {
@@ -132,6 +149,12 @@ class ChatController extends ChangeNotifier {
     socket.off('friend:request:new', _handleFriendRequestNew);
     socket.off('friend:request:accepted', _handleFriendRequestAccepted);
     socket.off('message:view-once-opened', _handleViewOnceOpened);
+    socket.off('message:edited', _handleMessageReplaced);
+    socket.off('message:reaction', _handleMessageReplaced);
+    socket.off('message:deleted', _handleMessageRemoved);
+    socket.off('message:expired', _handleMessageRemoved);
+    socket.off('message:listened', _handleMessageListened);
+    socket.off('group:updated', _handleGroupUpdated);
   }
 
   Future<void> _handleMessageNew(dynamic raw) async {
@@ -156,6 +179,140 @@ class ChatController extends ChangeNotifier {
     } catch (e, st) {
       debugPrint('message:poll handler failed: $e\n$st');
     }
+  }
+
+  /// `message:edited` / `message:reaction` carry the full updated message.
+  Future<void> _handleMessageReplaced(dynamic raw) async {
+    try {
+      if (raw is! Map) return;
+      final map = _coerceMap(raw);
+      final id = _messageId(map);
+      if (id.isEmpty) return;
+      final conv = selected;
+      if (conv == null || !_rawBelongsToConversation(map, conv)) return;
+      if (!messages.any((m) => m.id == id)) return;
+      final updated = await decorate(map);
+      messages = messages.map((m) {
+        if (m.id != id) return m;
+        updated.isStarred = m.isStarred;
+        updated.isPinned = m.isPinned;
+        return updated;
+      }).toList();
+      notifyListeners();
+    } catch (e, st) {
+      debugPrint('message update handler failed: $e\n$st');
+    }
+  }
+
+  /// `message:deleted` (delete for everyone) and `message:expired` (disappearing TTL).
+  void _handleMessageRemoved(dynamic raw) {
+    if (raw is! Map) return;
+    final id = '${raw['id'] ?? ''}';
+    if (id.isEmpty || !messages.any((m) => m.id == id)) return;
+    messages = messages.where((m) => m.id != id).toList();
+    importantIds.remove(id);
+    notifyListeners();
+  }
+
+  void _handleGroupUpdated(dynamic raw) {
+    if (raw is! Map) return;
+    try {
+      final g = QcGroup.fromJson(_coerceMap(raw));
+      if (!groups.any((x) => x.id == g.id)) return;
+      applyGroupUpdate(g);
+    } catch (e) {
+      debugPrint('group:updated handler failed: $e');
+    }
+  }
+
+  Future<QcGroup> commandCenterAction(String groupId, Map<String, dynamic> payload) async {
+    final g = await auth.api.updateCommandCenter(groupId, payload);
+    applyGroupUpdate(g);
+    return g;
+  }
+
+  void _handleMessageListened(dynamic raw) {
+    if (raw is! Map) return;
+    final id = '${raw['id'] ?? ''}';
+    final ids = (raw['listenedBy'] as List<dynamic>? ?? [])
+        .map((e) => e is Map ? '${e['user']}' : '$e')
+        .toList();
+    var changed = false;
+    for (final m in messages) {
+      if (m.id != id) continue;
+      m.listenedBy = ids.isNotEmpty ? ids : {...m.listenedBy, '${raw['userId']}'}.toList();
+      changed = true;
+    }
+    if (changed) notifyListeners();
+  }
+
+  /// Tell the sender a voice note was played (once per message).
+  Future<void> markVoiceListened(ChatMessage message) async {
+    if (message.isMine(me.id) || message.listenedBy.contains(me.id)) return;
+    message.listenedBy = [...message.listenedBy, me.id];
+    try {
+      await auth.api.markVoiceListened(message.id);
+    } catch (e) {
+      debugPrint('markVoiceListened failed: $e');
+    }
+  }
+
+  Future<void> _loadImportantIds() async {
+    try {
+      final data = await auth.api.getImportantMessages();
+      importantIds
+        ..clear()
+        ..addAll((data['entries'] as List<dynamic>? ?? [])
+            .whereType<Map>()
+            .map((e) => '${e['messageId']}'));
+      for (final m in messages) {
+        m.isImportant = importantIds.contains(m.id);
+      }
+      notifyListeners();
+    } catch (e) {
+      debugPrint('load important messages failed: $e');
+    }
+  }
+
+  /// Full Important list, decrypted, newest first.
+  Future<List<ChatMessage>> loadImportantMessages() async {
+    final data = await auth.api.getImportantMessages();
+    final rows = (data['messages'] as List<dynamic>? ?? []).whereType<Map>();
+    importantIds
+      ..clear()
+      ..addAll(rows.map(_coerceMap).map(_messageId));
+    final out = <ChatMessage>[];
+    for (final row in rows) {
+      out.add(await decorate(_coerceMap(row)));
+    }
+    return out;
+  }
+
+  Future<bool> toggleImportant(ChatMessage message) async {
+    final next = !message.isImportant;
+    try {
+      if (next) {
+        await auth.api.markImportant(message.id);
+        importantIds.add(message.id);
+      } else {
+        await auth.api.unmarkImportant(message.id);
+        importantIds.remove(message.id);
+      }
+      message.isImportant = next;
+      notifyListeners();
+      return true;
+    } on ApiException catch (e) {
+      threadError = e.message;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  void _markOpenThreadRead(Conversation conv) {
+    final Future<void> request = conv.type == ConversationType.dm
+        ? auth.api.markRead(conv.id)
+        : auth.api.markGroupRead(conv.id);
+    unawaited(request.catchError((Object e) => debugPrint('mark read failed: $e')));
   }
 
   void _handleMessageStatus(dynamic raw) {
@@ -384,37 +541,143 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool isFriendId(String id) {
+    if (friends.any((f) => f.id == id)) return true;
+    final mine = auth.user?.friends ?? const <String>[];
+    return mine.contains(id);
+  }
+
   Future<void> refreshInbox() async {
-    if (!auth.hasLocalKeyring) return;
+    // Still load people/friends without a local keyring so the home directory is never blank.
     if (_inboxRefreshInFlight) return;
     _inboxRefreshInFlight = true;
     loadingInbox = true;
+    inboxError = null;
     notifyListeners();
     try {
-      // Website-style light inbox: friends + one users page — never paginate the whole directory.
-      List<QcUser> loadedFriends = const [];
-      try {
-        loadedFriends = await auth.api.listFriends();
-      } catch (_) {}
-      final pageUsers = await auth.api.listUsers();
-      groups = await auth.api.listGroups();
-      await _refreshFriendRequests();
-      friends = loadedFriends;
+      var loadedFriends = <QcUser>[];
+      var pageUsers = <QcUser>[];
+      var pageGroups = <QcGroup>[];
+      var discovered = <QcUser>[];
+      Object? friendsErr;
+      Object? discoverErr;
+
+      // Parallel fetch — sequential calls were timing out on cold Vercel from the emulator.
+      await Future.wait([
+        () async {
+          try {
+            loadedFriends = await auth.api.listFriends();
+          } catch (e) {
+            friendsErr = e;
+            debugPrint('listFriends failed: $e');
+          }
+        }(),
+        () async {
+          try {
+            pageUsers = await auth.api.listUsers();
+          } catch (e) {
+            debugPrint('listUsers failed: $e');
+          }
+        }(),
+        () async {
+          try {
+            pageGroups = await auth.api.listGroups();
+          } catch (e) {
+            debugPrint('listGroups failed: $e');
+          }
+        }(),
+        () async {
+          try {
+            discovered = await auth.api.discoverUsers();
+          } catch (e) {
+            discoverErr = e;
+            debugPrint('discoverUsers failed: $e');
+          }
+        }(),
+        () async {
+          try {
+            await _refreshFriendRequests();
+          } catch (e) {
+            debugPrint('friendRequests failed: $e');
+          }
+        }(),
+      ]);
 
       final byId = <String, QcUser>{};
       for (final u in pageUsers) {
         byId[u.id] = u;
       }
-      for (final f in friends) {
+      for (final f in loadedFriends) {
         byId[f.id] = f;
       }
+      for (final u in discovered) {
+        byId.putIfAbsent(u.id, () => u);
+      }
+
+      // If /users/friends failed or returned empty, hydrate from auth.user.friends IDs.
+      if (loadedFriends.isEmpty) {
+        final friendIds = auth.user?.friends ?? const <String>[];
+        final hydrated = <QcUser>[];
+        for (final id in friendIds) {
+          final known = byId[id];
+          if (known != null) {
+            hydrated.add(known);
+            continue;
+          }
+          try {
+            final fetched = await auth.api.getUser(id);
+            byId[fetched.id] = fetched;
+            hydrated.add(fetched);
+          } catch (e) {
+            debugPrint('hydrate friend $id failed: $e');
+          }
+        }
+        loadedFriends = hydrated;
+        final err = friendsErr;
+        if (err != null && loadedFriends.isEmpty && friendIds.isNotEmpty) {
+          inboxError = err is ApiException ? err.message : 'Could not load friends';
+        }
+      }
+
+      // Bring back DMs that have local activity even if the peer wasn't on the users page.
+      for (final peerId in storage.listActiveDmPeerIds(me.id)) {
+        if (peerId == me.id || byId.containsKey(peerId)) continue;
+        try {
+          final fetched = await auth.api.getUser(peerId);
+          byId[fetched.id] = fetched;
+        } catch (e) {
+          debugPrint('hydrate activity peer $peerId failed: $e');
+        }
+      }
+
+      friends = loadedFriends;
+      groups = pageGroups;
       users = byId.values.toList();
       _mergeFriendProfiles();
+
+      if (discovered.isNotEmpty) {
+        discoverCandidates = discovered;
+      } else {
+        discoverCandidates = users
+            .where((u) => u.id != me.id && !isFriendId(u.id) && !u.isQuantumAi)
+            .toList();
+        final err = discoverErr;
+        if (discoverCandidates.isEmpty && err != null) {
+          inboxError ??= err is ApiException ? err.message : 'Could not load people directory';
+        }
+      }
+
+      debugPrint(
+        'inbox: friends=${friends.length} users=${users.length} '
+        'discover=${discoverCandidates.length} groups=${groups.length}',
+      );
       _rebuildConversations();
     } on ApiException catch (e) {
+      inboxError = e.message;
       threadError = e.message;
       notifyListeners();
     } catch (e) {
+      inboxError = '$e';
       threadError = '$e';
       notifyListeners();
     } finally {
@@ -424,6 +687,17 @@ class ChatController extends ChangeNotifier {
     }
     // Stories + QuantumAI after the list is visible — don't block the home screen.
     unawaited(_enrichInboxBackground());
+  }
+
+  Future<void> refreshDiscover({String q = ''}) async {
+    try {
+      discoverCandidates = await auth.api.discoverUsers(q: q);
+      if (filter == 'people') _rebuildConversations();
+      notifyListeners();
+    } on ApiException catch (e) {
+      inboxError = e.message;
+      notifyListeners();
+    }
   }
 
   Future<void> _enrichInboxBackground() async {
@@ -535,6 +809,14 @@ class ChatController extends ChangeNotifier {
 
   Future<void> searchPeople(String q) async {
     search = q;
+    if (filter == 'discover') {
+      if (q.trim().length < 2) {
+        unawaited(refreshDiscoverGroups());
+      } else {
+        unawaited(refreshDiscoverGroups(q: q.trim()));
+      }
+      return;
+    }
     if (q.trim().length < 2) {
       // Filter locally — do not reload every user page on each keystroke clear.
       _rebuildConversations();
@@ -543,16 +825,42 @@ class ChatController extends ChangeNotifier {
     try {
       users = await auth.api.listUsers(q: q.trim());
       groups = await auth.api.listGroups(q: q.trim());
+      try {
+        discoverCandidates = await auth.api.discoverUsers(q: q.trim());
+      } catch (_) {}
       _rebuildConversations();
     } on ApiException catch (e) {
+      inboxError = e.message;
       threadError = e.message;
       notifyListeners();
     }
   }
 
   void setFilter(String next) {
-    filter = next;
+    // Migrate old mobile-only "people" chip to website "discover".
+    final normalized = next == 'people' ? 'discover' : next;
+    filter = normalized;
+    if (normalized == 'discover') {
+      unawaited(refreshDiscoverGroups(q: search.trim()));
+    }
     _rebuildConversations();
+  }
+
+  Future<void> refreshDiscoverGroups({String q = ''}) async {
+    loadingDiscoverGroups = true;
+    notifyListeners();
+    try {
+      discoverGroups = await auth.api.discoverGroups(q: q);
+    } on ApiException catch (e) {
+      inboxError = e.message;
+      discoverGroups = [];
+    } catch (e) {
+      inboxError = '$e';
+      discoverGroups = [];
+    } finally {
+      loadingDiscoverGroups = false;
+      notifyListeners();
+    }
   }
 
   void _rebuildConversations() {
@@ -571,22 +879,36 @@ class ChatController extends ChangeNotifier {
     self.archived = storage.isChatArchived(me.id, self.key);
     items.add(self);
 
-    for (final u in users) {
+    // Website parity: All lists every known person (users + friends + discover).
+    final directory = <String, QcUser>{
+      for (final u in users) u.id: u,
+      for (final f in friends) f.id: f,
+      for (final u in discoverCandidates) u.id: u,
+    };
+
+    for (final u in directory.values) {
       if (u.id == me.id) continue;
       final key = storage.conversationKeyForUser(u.id);
       final activity = storage.getConversationActivity(me.id, key);
-      final isFriend = friends.any((f) => f.id == u.id);
+      final friend = isFriendId(u.id);
       final isAi = u.isQuantumAi;
-      final hasActivity = activity != null && activity.at.isNotEmpty;
-      // Don't turn the whole user directory into a chat list — that freezes the home screen.
-      if (!isFriend && !isAi && !hasActivity && search.trim().isEmpty) {
-        continue;
+      final status = u.requestStatus;
+      String? subtitle;
+      if (!friend && !isAi) {
+        if (status == 'pending_sent') {
+          subtitle = 'Request sent';
+        } else if (status == 'pending_received') {
+          subtitle = 'Wants to be friends';
+        } else if (u.statusText.isNotEmpty) {
+          subtitle = u.statusText;
+        }
       }
       items.add(Conversation(
         key: key,
         type: ConversationType.dm,
         id: u.id,
         title: u.title,
+        subtitle: subtitle,
         peer: u,
         unread: storage.isUnread(me.id, key, activity?.at, activity?.from),
         sortAt: activity?.at ?? u.lastLoginAt?.toIso8601String() ?? '',
@@ -594,6 +916,14 @@ class ChatController extends ChangeNotifier {
         archived: storage.isChatArchived(me.id, key),
       ));
     }
+
+    // Discover tab renders public groups in the home UI (not conversation rows).
+    if (filter == 'discover' || filter == 'people') {
+      conversations = const [];
+      notifyListeners();
+      return;
+    }
+
     for (final g in groups) {
       final key = storage.conversationKeyForGroup(g.id);
       final activity = storage.getConversationActivity(me.id, key);
@@ -638,7 +968,7 @@ class ChatController extends ChangeNotifier {
       if (filter == 'friends') {
         if (c.isSelfChat) return true;
         if (c.type != ConversationType.dm) return false;
-        return friends.any((f) => f.id == c.id);
+        return isFriendId(c.id);
       }
       if (q.isNotEmpty && !c.title.toLowerCase().contains(q) && !(c.subtitle ?? '').toLowerCase().contains(q)) {
         return false;
@@ -686,9 +1016,7 @@ class ChatController extends ChangeNotifier {
       messages = decorated;
       await storage.markConversationRead(me.id, conv.key);
       conv.unread = false;
-      if (conv.type == ConversationType.dm) {
-        unawaited(auth.api.markRead(conv.id));
-      }
+      _markOpenThreadRead(conv);
       for (final m in messages.where((m) => !m.isMine(me.id))) {
         socket.markDelivered(m.id);
       }
@@ -941,6 +1269,13 @@ class ChatController extends ChangeNotifier {
       announcementBody: announcementBody,
       mediaCategory: raw['mediaCategory'] as String?,
       quantumAI: resolvedKind == 'ai' || resolvedKind == 'ai_note',
+      timeCapsule: raw['timeCapsule'] == true,
+      unlocksAt: _parseDate(raw['unlocksAt']),
+      locked: raw['locked'] == true,
+      listenedBy: (raw['listenedBy'] as List<dynamic>? ?? [])
+          .map((e) => e is Map ? '${e['user']}' : '$e')
+          .toList(),
+      isImportant: importantIds.contains(_messageId(raw)),
     );
   }
 
@@ -1191,10 +1526,12 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> sendText(String draft) async {
+  /// [capsuleUnlocksAt] sends a DM time capsule the recipient can't read until then.
+  Future<void> sendText(String draft, {DateTime? capsuleUnlocksAt}) async {
     final conv = selected;
     final text = draft.trim();
     if (conv == null || text.isEmpty || sending) return;
+    if (capsuleUnlocksAt != null && conv.type != ConversationType.dm) return;
 
     if (selectedIsQuantumAi) {
       if (aiBusy) {
@@ -1277,7 +1614,12 @@ class ChatController extends ChangeNotifier {
           'forSender': forSender.toJson(),
         };
         if (replyId != null) payload['replyTo'] = replyId;
-        if (disappearSeconds > 0) payload['expiresInSeconds'] = disappearSeconds;
+        if (capsuleUnlocksAt != null) {
+          payload['timeCapsule'] = true;
+          payload['unlocksAt'] = capsuleUnlocksAt.toUtc().toIso8601String();
+        } else if (disappearSeconds > 0) {
+          payload['expiresInSeconds'] = disappearSeconds;
+        }
         final raw = await auth.api.sendMessage(payload);
         final msg = await decorate(raw);
         msg.text = text;
@@ -1630,7 +1972,12 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> refreshGroup(String groupId) async {
-    final g = await auth.api.getGroup(groupId);
+    applyGroupUpdate(await auth.api.getGroup(groupId));
+  }
+
+  /// Swap in a fresh group snapshot (REST response or `group:updated`).
+  void applyGroupUpdate(QcGroup g) {
+    final groupId = g.id;
     groups = groups.map((x) => x.id == g.id ? g : x).toList();
     if (selected?.id == groupId) {
       selected = Conversation(
@@ -1642,6 +1989,8 @@ class ChatController extends ChangeNotifier {
         group: g,
         unread: selected!.unread,
         sortAt: selected!.sortAt,
+        muted: selected!.muted,
+        archived: selected!.archived,
       );
     }
     _rebuildConversations();
@@ -1856,9 +2205,7 @@ class ChatController extends ChangeNotifier {
         messages.sort((a, b) => (a.createdAt ?? DateTime(0)).compareTo(b.createdAt ?? DateTime(0)));
         if (!msg.isMine(me.id)) {
           socket.markDelivered(msg.id);
-          if (conv.type == ConversationType.dm) {
-            unawaited(auth.api.markRead(conv.id));
-          }
+          _markOpenThreadRead(conv);
         }
         notifyListeners();
       }

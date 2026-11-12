@@ -25,11 +25,11 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>QuantumChat uses the camera to send photos in encrypted chats.</string>
+	<string>QuantumChat uses the camera to send photos in encrypted chats and to go live.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>QuantumChat needs photo access to import keys.txt and send images.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>QuantumChat uses the microphone for voice notes.</string>
+	<string>QuantumChat uses the microphone for voice notes and live video.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

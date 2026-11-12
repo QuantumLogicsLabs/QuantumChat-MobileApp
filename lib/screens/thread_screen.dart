@@ -35,7 +35,9 @@ import '../widgets/theme_scene.dart';
 import '../crypto/key_storage.dart';
 import 'chat_media_screen.dart';
 import 'chat_theme_screen.dart';
+import 'group_command_center_screen.dart';
 import 'group_info_screen.dart';
+import 'starred_messages_screen.dart';
 import 'user_profile_screen.dart';
 import 'wallpaper_screen.dart';
 
@@ -51,6 +53,8 @@ class ThreadScreen extends StatefulWidget {
 class _ThreadScreenState extends State<ThreadScreen> {
   final composer = TextEditingController();
   final scroll = ScrollController();
+  final Map<String, GlobalKey> _messageKeys = {};
+  String? _flashMessageId;
   final searchCtrl = TextEditingController();
   bool searching = false;
   String searchQuery = '';
@@ -573,6 +577,19 @@ class _ThreadScreenState extends State<ThreadScreen> {
                 showGifPickerSheet(context);
               },
             ),
+            if (!isGroup && !chat.selectedIsQuantumAi && chat.selected?.isSelfChat != true)
+              ListTile(
+                leading: const Icon(Icons.hourglass_top_outlined),
+                title: const Text('Time capsule'),
+                subtitle: Text(
+                  'Seal a message until a future date',
+                  style: TextStyle(color: colors.textMuted, fontSize: 12),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _createTimeCapsuleDialog();
+                },
+              ),
             if (isGroup) ...[
               const Divider(height: 8),
               ListTile(
@@ -762,6 +779,129 @@ class _ThreadScreenState extends State<ThreadScreen> {
         );
   }
 
+  /// Website TimeCapsuleModal parity: text + unlock date/time, DMs only.
+  Future<void> _createTimeCapsuleDialog() async {
+    final colors = context.read<ThemeController>().colors;
+    final textCtrl = TextEditingController(text: composer.text.trim());
+    final now = DateTime.now();
+    var when = DateTime(now.year, now.month, now.day + 1, 9);
+    const presets = <(String, Duration)>[
+      ('1 hour', Duration(hours: 1)),
+      ('Tomorrow', Duration(days: 1)),
+      ('1 week', Duration(days: 7)),
+      ('1 month', Duration(days: 30)),
+      ('1 year', Duration(days: 365)),
+    ];
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            final valid = when.isAfter(DateTime.now()) && textCtrl.text.trim().isNotEmpty;
+            return AlertDialog(
+              backgroundColor: colors.surface,
+              title: Row(
+                children: [
+                  Icon(Icons.hourglass_top, color: colors.accent),
+                  const SizedBox(width: 8),
+                  Text('Time capsule', style: TextStyle(color: colors.textPrimary)),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "They'll see a sealed capsule until it opens.",
+                      style: TextStyle(color: colors.textMuted, fontSize: 13),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: textCtrl,
+                      autofocus: textCtrl.text.isEmpty,
+                      minLines: 2,
+                      maxLines: 5,
+                      onChanged: (_) => setLocal(() {}),
+                      decoration: const InputDecoration(hintText: 'Write a message for the futureâ€¦'),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        for (final p in presets)
+                          ActionChip(
+                            label: Text(p.$1),
+                            onPressed: () => setLocal(() {
+                              final base = DateTime.now().add(p.$2);
+                              when = p.$2 >= const Duration(days: 1)
+                                  ? DateTime(base.year, base.month, base.day, 9)
+                                  : base;
+                            }),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.event, color: colors.accentCyan),
+                      title: Text(
+                        'Opens ${formatCapsuleTime(when)}',
+                        style: TextStyle(color: colors.textPrimary, fontSize: 14),
+                      ),
+                      subtitle: Text('Tap to pick a date & time', style: TextStyle(color: colors.textMuted, fontSize: 12)),
+                      onTap: () async {
+                        final date = await showDatePicker(
+                          context: ctx,
+                          initialDate: when,
+                          firstDate: DateTime.now(),
+                          lastDate: DateTime.now().add(const Duration(days: 365 * 10)),
+                        );
+                        if (date == null || !ctx.mounted) return;
+                        final time = await showTimePicker(
+                          context: ctx,
+                          initialTime: TimeOfDay.fromDateTime(when),
+                        );
+                        if (time == null) return;
+                        setLocal(() {
+                          when = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+                        });
+                      },
+                    ),
+                    if (!when.isAfter(DateTime.now()))
+                      Text('Pick a time in the future', style: TextStyle(color: colors.error, fontSize: 12)),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                FilledButton(
+                  onPressed: valid ? () => Navigator.pop(ctx, true) : null,
+                  child: const Text('Seal'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    final text = textCtrl.text.trim();
+    textCtrl.dispose();
+    if (ok != true || !mounted || text.isEmpty) return;
+    final chat = context.read<ChatController>();
+    await chat.sendText(text, capsuleUnlocksAt: when);
+    if (!mounted) return;
+    if (chat.threadError == null) {
+      composer.clear();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Time capsule sealed â€” opens ${formatCapsuleTime(when)}')),
+      );
+    }
+  }
+
   Future<void> _createAnnouncementDialog() async {
     final colors = context.read<ThemeController>().colors;
     final bodyCtrl = TextEditingController();
@@ -798,141 +938,224 @@ class _ThreadScreenState extends State<ThreadScreen> {
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: colors.surface,
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (conv.type == ConversationType.group)
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               ListTile(
-                leading: const Icon(Icons.info_outline),
-                title: const Text('Group info'),
+                leading: const Icon(Icons.search),
+                title: const Text('Search in chat'),
                 onTap: () {
                   Navigator.pop(ctx);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => GroupInfoScreen(groupId: conv.id)),
-                  );
+                  setState(() => searching = true);
                 },
               ),
-            ListTile(
-              leading: Icon(conv.muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
-              title: Text(conv.muted ? 'Unmute' : 'Mute'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                if (conv.muted) {
-                  await chat.unmuteSelected();
-                } else {
-                  await chat.muteSelected();
-                }
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.timer_outlined),
-              title: const Text('Disappearing messages'),
-              subtitle: Text(
-                chat.disappearSeconds > 0
-                    ? _disappearLabel(chat.disappearSeconds)
-                    : 'Off',
-                style: TextStyle(color: colors.textMuted, fontSize: 12),
-              ),
-              onTap: () {
-                Navigator.pop(ctx);
-                _showDisappearSheet();
-              },
-            ),
-            ListTile(
-              leading: Icon(conv.archived ? Icons.unarchive_outlined : Icons.archive_outlined),
-              title: Text(conv.archived ? 'Unarchive' : 'Archive'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await chat.toggleArchiveSelected();
-              },
-            ),
-            if (conv.type == ConversationType.dm && !conv.isSelfChat)
               ListTile(
-                leading: const Icon(Icons.visibility_off_outlined),
-                title: const Text('Hide chat'),
-                onTap: () async {
+                leading: const Icon(Icons.star_outline),
+                title: const Text('Starred & Important'),
+                onTap: () {
                   Navigator.pop(ctx);
-                  await chat.hideSelectedChat();
-                  if (mounted) Navigator.pop(context);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const StarredMessagesScreen()));
                 },
               ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Shared media'),
-              onTap: () {
-                Navigator.pop(ctx);
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatMediaScreen()));
-              },
-            ),
-            if (!conv.isSelfChat)
+              if (conv.type == ConversationType.group)
+                ListTile(
+                  leading: const Icon(Icons.dashboard_customize_outlined),
+                  title: const Text('Command Center'),
+                  subtitle: Text(
+                    'Tasks, links, notes, events & more',
+                    style: TextStyle(color: colors.textMuted, fontSize: 12),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _openCommandCenter(conv.id);
+                  },
+                ),
+              if (conv.type == ConversationType.group)
+                ListTile(
+                  leading: const Icon(Icons.info_outline),
+                  title: const Text('Group info'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => GroupInfoScreen(groupId: conv.id)),
+                    );
+                  },
+                ),
               ListTile(
-                leading: const Icon(Icons.palette_outlined),
-                title: const Text('Chat theme'),
+                leading: Icon(conv.muted ? Icons.notifications_active_outlined : Icons.notifications_off_outlined),
+                title: Text(conv.muted ? 'Unmute' : 'Mute'),
                 onTap: () async {
                   Navigator.pop(ctx);
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => ChatThemeScreen(
-                        peerId: conv.type == ConversationType.dm ? conv.id : null,
-                        groupId: conv.type == ConversationType.group ? conv.id : null,
+                  if (conv.muted) {
+                    await chat.unmuteSelected();
+                  } else {
+                    await chat.muteSelected();
+                  }
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.timer_outlined),
+                title: const Text('Disappearing messages'),
+                subtitle: Text(
+                  chat.disappearSeconds > 0
+                      ? _disappearLabel(chat.disappearSeconds)
+                      : 'Off',
+                  style: TextStyle(color: colors.textMuted, fontSize: 12),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showDisappearSheet();
+                },
+              ),
+              ListTile(
+                leading: Icon(conv.archived ? Icons.unarchive_outlined : Icons.archive_outlined),
+                title: Text(conv.archived ? 'Unarchive' : 'Archive'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await chat.toggleArchiveSelected();
+                },
+              ),
+              if (conv.type == ConversationType.dm && !conv.isSelfChat)
+                ListTile(
+                  leading: const Icon(Icons.visibility_off_outlined),
+                  title: const Text('Hide chat'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await chat.hideSelectedChat();
+                    if (mounted) Navigator.pop(context);
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Shared media'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatMediaScreen()));
+                },
+              ),
+              if (!conv.isSelfChat)
+                ListTile(
+                  leading: const Icon(Icons.palette_outlined),
+                  title: const Text('Chat theme'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ChatThemeScreen(
+                          peerId: conv.type == ConversationType.dm ? conv.id : null,
+                          groupId: conv.type == ConversationType.group ? conv.id : null,
+                        ),
+                      ),
+                    );
+                    if (mounted) unawaited(_loadChatTheme());
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.delete_sweep_outlined),
+                title: const Text('Clear chat'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final scopes = await showClearChatSheet(context, colors: colors);
+                  if (scopes == null || scopes.isEmpty || !mounted) return;
+                  final cleared = await chat.clearSelectedChat(scopes: scopes);
+                  if (!mounted || !cleared) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: const Text('Chat cleared'),
+                      action: SnackBarAction(
+                        label: 'Undo',
+                        onPressed: () async {
+                          try {
+                            await chat.undoClearSelectedChat();
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Clear undone')),
+                              );
+                            }
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Could not undo: $e')),
+                              );
+                            }
+                          }
+                        },
                       ),
                     ),
                   );
-                  if (mounted) unawaited(_loadChatTheme());
                 },
               ),
-            ListTile(
-              leading: const Icon(Icons.delete_sweep_outlined),
-              title: const Text('Clear chat'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                final scopes = await showClearChatSheet(context, colors: colors);
-                if (scopes == null || scopes.isEmpty || !mounted) return;
-                final cleared = await chat.clearSelectedChat(scopes: scopes);
-                if (!mounted || !cleared) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: const Text('Chat cleared'),
-                    action: SnackBarAction(
-                      label: 'Undo',
-                      onPressed: () async {
-                        try {
-                          await chat.undoClearSelectedChat();
-                          if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Clear undone')),
-                            );
-                          }
-                        } catch (e) {
-                          if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Could not undo: $e')),
-                            );
-                          }
-                        }
-                      },
-                    ),
-                  ),
-                );
-              },
-            ),
-            if (conv.type == ConversationType.dm && !conv.isSelfChat)
-              ListTile(
-                leading: Icon(Icons.block, color: colors.error),
-                title: Text('Block', style: TextStyle(color: colors.error)),
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  await chat.blockPeer(conv.id);
-                  if (mounted) Navigator.pop(context);
-                },
-              ),
-          ],
+              if (conv.type == ConversationType.dm && !conv.isSelfChat)
+                ListTile(
+                  leading: Icon(Icons.block, color: colors.error),
+                  title: Text('Block', style: TextStyle(color: colors.error)),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await chat.blockPeer(conv.id);
+                    if (mounted) Navigator.pop(context);
+                  },
+                ),
+            ],
+          ),
         ),
       ),
     );
+  }
+
+  Future<void> _openCommandCenter(String groupId) async {
+    final messageId = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => GroupCommandCenterScreen(groupId: groupId)),
+    );
+    if (messageId != null && mounted) await _jumpToMessage(messageId);
+  }
+
+  /// Scroll the thread to [id] and briefly outline it (Command Center "jump to message").
+  Future<void> _jumpToMessage(String id) async {
+    final chat = context.read<ChatController>();
+    final index = chat.messages.indexWhere((m) => m.id == id);
+    if (index < 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('That message is not loaded in this chat')),
+      );
+      return;
+    }
+    setState(() {
+      searching = false;
+      searchQuery = '';
+      searchCtrl.clear();
+      searchFilter = _SearchMediaFilter.all;
+      _flashMessageId = id;
+    });
+    await WidgetsBinding.instance.endOfFrame;
+    // ListView.builder only builds what's near the viewport: estimate the offset,
+    // let it lay out, then fine-tune with ensureVisible once the bubble exists.
+    for (var attempt = 0; attempt < 4 && mounted; attempt++) {
+      final target = _messageKeys[id]?.currentContext;
+      if (target != null) {
+        if (!target.mounted) break;
+        await Scrollable.ensureVisible(
+          target,
+          alignment: 0.3,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOutCubic,
+        );
+        break;
+      }
+      if (!scroll.hasClients) break;
+      final max = scroll.position.maxScrollExtent;
+      final span = chat.messages.length > 1 ? chat.messages.length - 1 : 1;
+      scroll.jumpTo((max * index / span).clamp(0.0, max));
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    Timer(const Duration(milliseconds: 2200), () {
+      if (mounted && _flashMessageId == id) setState(() => _flashMessageId = null);
+    });
   }
 
   static String _disappearLabel(int seconds) {
@@ -1231,6 +1454,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
                             final showName = conv.type == ConversationType.group && !mine;
                             final showDateSep = _shouldShowDateSeparator(visible, i);
                             return Column(
+                              key: _messageKeys.putIfAbsent(m.id, GlobalKey.new),
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 if (showDateSep)
@@ -1242,7 +1466,8 @@ class _ThreadScreenState extends State<ThreadScreen> {
                                   senderName: showName ? chat.displayName(m.from) : null,
                                   colors: colors,
                                   scenic: scenic,
-                                  highlight: searching && (searchQuery.isNotEmpty || searchFilter != _SearchMediaFilter.all),
+                                  highlight: m.id == _flashMessageId ||
+                                      (searching && (searchQuery.isNotEmpty || searchFilter != _SearchMediaFilter.all)),
                                   currentUserId: chat.me.id,
                                   bubbleTintMine: bubbleTint,
                                   onOpenActions: () => _messageActions(m),
@@ -1334,7 +1559,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
                             child: IconButton(
                               tooltip: 'Send voice note',
                               onPressed: chat.sending ? null : _stopAndSendVoice,
-                              icon: Icon(Icons.send, color: colors.bubbleMineFg, size: 18),
+                              icon: Icon(Icons.send, color: colors.onAccent, size: 18),
                             ),
                           ),
                         ],
@@ -1426,16 +1651,16 @@ class _ThreadScreenState extends State<ThreadScreen> {
                                       ? (chat.selectedIsQuantumAi ? null : _startVoiceRecording)
                                       : _send),
                               icon: (chat.sending || chat.aiBusy)
-                                  ? const SizedBox(
+                                  ? SizedBox(
                                       width: 16,
                                       height: 16,
-                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: colors.onAccent),
                                     )
                                   : Icon(
                                       composer.text.trim().isEmpty && chat.editing == null && !chat.selectedIsQuantumAi
                                           ? Icons.mic
                                           : Icons.send,
-                                      color: colors.bubbleMineFg,
+                                      color: colors.onAccent,
                                       size: 18,
                                     ),
                             ),
@@ -1565,6 +1790,19 @@ class _ThreadScreenState extends State<ThreadScreen> {
           const SnackBar(content: Text('Message forwarded')),
         );
       }
+    } else if (action == 'important') {
+      final ok = await chat.toggleImportant(message);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(!ok
+                ? (chat.threadError ?? 'Could not update Important')
+                : message.isImportant
+                    ? 'Marked as Important'
+                    : 'Removed from Important'),
+          ),
+        );
+      }
     } else if (action == 'star') {
       // TODO: Backend has no star endpoint yet — toggling local state only.
       message.isStarred = !message.isStarred;
@@ -1673,7 +1911,12 @@ class _MessageBubble extends StatelessWidget {
     final isStoryReply = isStoryReplyPayload(storyPayload);
     final base = glassBubbleDecoration(mine: mine, colors: colors, scenic: scenic);
     final tinted = (mine && bubbleTintMine != null)
-        ? base.copyWith(color: scenic ? bubbleTintMine!.withValues(alpha: 0.88) : bubbleTintMine)
+        ? BoxDecoration(
+            color: scenic ? bubbleTintMine!.withValues(alpha: 0.88) : bubbleTintMine,
+            borderRadius: base.borderRadius,
+            border: base.border,
+            boxShadow: base.boxShadow,
+          )
         : base;
 
     if (isStoryReaction) {
@@ -1801,7 +2044,14 @@ class _MessageBubble extends StatelessWidget {
                                 padding: const EdgeInsets.only(bottom: 6),
                                 child: _ViewOnceBubble(message: message, colors: colors),
                               ),
-                            if (message.isPoll || message.isEvent || message.isAnnouncement)
+                            if (message.timeCapsule && (message.locked || message.isCapsuleSealed))
+                              Padding(
+                                padding: EdgeInsets.only(bottom: message.locked ? 0 : 6),
+                                child: _TimeCapsuleBanner(message: message, colors: colors, mine: mine),
+                              ),
+                            if (message.locked)
+                              const SizedBox.shrink()
+                            else if (message.isPoll || message.isEvent || message.isAnnouncement)
                               Align(
                                 alignment: Alignment.centerLeft,
                                 child: GroupMessageContent(
@@ -1918,6 +2168,11 @@ class _MessageBubble extends StatelessWidget {
                           padding: const EdgeInsets.only(right: 4),
                           child: Icon(Icons.star, size: 12, color: colors.accentCyan),
                         ),
+                      if (message.isImportant)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 4),
+                          child: Icon(Icons.label_important, size: 12, color: colors.accentCyan),
+                        ),
                       if (message.isDisappearing)
                         Padding(
                           padding: const EdgeInsets.only(right: 4),
@@ -1974,6 +2229,54 @@ class _MessageBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Time capsule header: sealed placeholder for the recipient, "opens â€¦" note for the sender.
+class _TimeCapsuleBanner extends StatelessWidget {
+  const _TimeCapsuleBanner({required this.message, required this.colors, required this.mine});
+
+  final ChatMessage message;
+  final QcColors colors;
+  final bool mine;
+
+  @override
+  Widget build(BuildContext context) {
+    final unlocks = message.unlocksAt?.toLocal();
+    final when = unlocks == null ? 'later' : formatCapsuleTime(unlocks);
+    final fg = mine ? colors.bubbleMineFg : colors.bubbleTheirsFg;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(message.locked ? Icons.lock_clock : Icons.hourglass_top, size: 18, color: fg.withValues(alpha: 0.85)),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                message.locked ? 'Time capsule' : 'Time capsule Â· sealed',
+                style: TextStyle(color: fg, fontWeight: FontWeight.w700, fontSize: 13),
+              ),
+              Text(
+                'Opens $when',
+                style: TextStyle(color: fg.withValues(alpha: 0.75), fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+String formatCapsuleTime(DateTime t) {
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  final h = t.hour % 12 == 0 ? 12 : t.hour % 12;
+  final m = t.minute.toString().padLeft(2, '0');
+  final ampm = t.hour < 12 ? 'AM' : 'PM';
+  final now = DateTime.now();
+  final year = t.year == now.year ? '' : ' ${t.year}';
+  return '${months[t.month - 1]} ${t.day}$year, $h:$m $ampm';
 }
 
 /// Shows a view-once media placeholder or "opened" state.

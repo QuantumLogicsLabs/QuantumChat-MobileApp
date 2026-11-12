@@ -39,6 +39,7 @@ dependencies:
   url_launcher: ^6.3.2
   qr_flutter: ^4.1.0
   cryptography: ^2.9.0
+  flutter_webrtc: ^1.6.2+hotfix.4
 
 # path_provider_android 2.3.x pulls JNI/NDK. This machine has no NDK installed.
 # record 5.2.1 pulls record_linux ^0.7.2 with record_platform_interface 1.6.0;

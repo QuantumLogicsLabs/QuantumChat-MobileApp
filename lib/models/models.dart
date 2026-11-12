@@ -61,6 +61,8 @@ class QcUser {
     this.transliteratedNames = const {},
     this.birthday,
     this.birthdayLocked = false,
+    this.requestStatus,
+    this.requestId,
   });
 
   final String id;
@@ -88,6 +90,9 @@ class QcUser {
   /// Visible birthday for other profiles when privacy allows.
   final DateTime? birthday;
   final bool birthdayLocked;
+  /// Present on `/users/discover` candidates.
+  final String? requestStatus;
+  final String? requestId;
 
   String get title => displayName.isNotEmpty ? displayName : username;
 
@@ -146,6 +151,8 @@ class QcUser {
       transliteratedNames: translit,
       birthday: birthday ?? dob,
       birthdayLocked: json['birthdayLocked'] == true,
+      requestStatus: json['requestStatus'] as String?,
+      requestId: json['requestId']?.toString(),
     );
   }
 
@@ -220,6 +227,8 @@ class QcUser {
       transliteratedNames: transliteratedNames ?? this.transliteratedNames,
       birthday: birthday,
       birthdayLocked: birthdayLocked,
+      requestStatus: requestStatus,
+      requestId: requestId,
     );
   }
 }
@@ -238,6 +247,9 @@ class QcGroup {
     this.inviteCode,
     this.updatedAt,
     this.createdAt,
+    this.pinnedMessageIds = const [],
+    this.quantumAiEnabled = false,
+    this.commandCenter = const GroupCommandCenterData(),
   });
 
   final String id;
@@ -253,6 +265,11 @@ class QcGroup {
   final String? inviteCode;
   final DateTime? updatedAt;
   final DateTime? createdAt;
+  final List<String> pinnedMessageIds;
+  final bool quantumAiEnabled;
+
+  /// Shared tasks / links / notes hub (`PATCH /groups/:id/command-center`).
+  final GroupCommandCenterData commandCenter;
 
   bool get isPublic => visibility == 'public';
 
@@ -283,6 +300,83 @@ class QcGroup {
       inviteCode: (code != null && code.isNotEmpty && code != 'null') ? code : null,
       updatedAt: parse(json['updatedAt']),
       createdAt: parse(json['createdAt']),
+      pinnedMessageIds: (json['pinnedMessageIds'] as List<dynamic>? ?? []).map((e) => '$e').toList(),
+      quantumAiEnabled: (json['quantumAI'] is Map) && (json['quantumAI'] as Map)['enabled'] == true,
+      commandCenter: json['commandCenter'] is Map
+          ? GroupCommandCenterData.fromJson(Map<String, dynamic>.from(json['commandCenter'] as Map))
+          : const GroupCommandCenterData(),
+    );
+  }
+}
+
+class HubTask {
+  const HubTask({required this.id, required this.title, this.done = false, this.assigneeId, this.createdBy});
+
+  final String id;
+  final String title;
+  final bool done;
+  final String? assigneeId;
+  final String? createdBy;
+
+  factory HubTask.fromJson(Map<String, dynamic> j) => HubTask(
+        id: '${j['id']}',
+        title: j['title'] as String? ?? '',
+        done: j['done'] == true,
+        assigneeId: j['assigneeId']?.toString(),
+        createdBy: j['createdBy']?.toString(),
+      );
+}
+
+class HubLink {
+  const HubLink({required this.id, required this.title, required this.url, this.createdBy});
+
+  final String id;
+  final String title;
+  final String url;
+  final String? createdBy;
+
+  factory HubLink.fromJson(Map<String, dynamic> j) => HubLink(
+        id: '${j['id']}',
+        title: j['title'] as String? ?? 'Link',
+        url: j['url'] as String? ?? '',
+        createdBy: j['createdBy']?.toString(),
+      );
+}
+
+class HubNote {
+  const HubNote({required this.id, this.title = '', required this.body, this.updatedBy, this.updatedAt});
+
+  final String id;
+  final String title;
+  final String body;
+  final String? updatedBy;
+  final DateTime? updatedAt;
+
+  factory HubNote.fromJson(Map<String, dynamic> j) => HubNote(
+        id: '${j['id']}',
+        title: j['title'] as String? ?? '',
+        body: j['body'] as String? ?? '',
+        updatedBy: j['updatedBy']?.toString(),
+        updatedAt: j['updatedAt'] is String ? DateTime.tryParse(j['updatedAt'] as String) : null,
+      );
+}
+
+class GroupCommandCenterData {
+  const GroupCommandCenterData({this.tasks = const [], this.links = const [], this.notes = const []});
+
+  final List<HubTask> tasks;
+  final List<HubLink> links;
+  final List<HubNote> notes;
+
+  factory GroupCommandCenterData.fromJson(Map<String, dynamic> j) {
+    List<T> list<T>(String key, T Function(Map<String, dynamic>) f) => (j[key] as List<dynamic>? ?? [])
+        .whereType<Map>()
+        .map((e) => f(Map<String, dynamic>.from(e)))
+        .toList();
+    return GroupCommandCenterData(
+      tasks: list('tasks', HubTask.fromJson),
+      links: list('links', HubLink.fromJson),
+      notes: list('notes', HubNote.fromJson),
     );
   }
 }
@@ -456,12 +550,15 @@ class FriendRequest {
   final DateTime? createdAt;
 
   factory FriendRequest.fromJson(Map<String, dynamic> json) {
-    final fromRaw = json['from'];
+    // API returns `{ user: {...} }` for friend-requests; older shapes used `from`.
+    final fromRaw = json['user'] ?? json['from'];
     final QcUser from;
-    if (fromRaw is Map<String, dynamic>) {
-      from = QcUser.fromJson(fromRaw);
-    } else {
+    if (fromRaw is Map) {
+      from = QcUser.fromJson(Map<String, dynamic>.from(fromRaw));
+    } else if (fromRaw != null) {
       from = QcUser(id: '$fromRaw', username: 'user');
+    } else {
+      from = const QcUser(id: '', username: 'user');
     }
     return FriendRequest(
       id: '${json['id'] ?? json['_id']}',
@@ -687,6 +784,11 @@ class ChatMessage {
     this.quantumAI = false,
     this.streaming = false,
     this.failed = false,
+    this.timeCapsule = false,
+    this.unlocksAt,
+    this.locked = false,
+    this.listenedBy = const [],
+    this.isImportant = false,
   });
 
   final String id;
@@ -724,7 +826,22 @@ class ChatMessage {
   bool streaming;
   bool failed;
 
+  /// Time capsule (DM): content hidden from the recipient until [unlocksAt].
+  final bool timeCapsule;
+  final DateTime? unlocksAt;
+
+  /// Server redacted the content because the capsule hasn't opened yet.
+  final bool locked;
+
+  /// User ids that have played this voice message.
+  List<String> listenedBy;
+
+  /// Server-backed "Important" flag (`/messages/:id/important`).
+  bool isImportant;
+
   bool isMine(String myId) => from == myId;
+  bool get isCapsuleSealed =>
+      timeCapsule && unlocksAt != null && unlocksAt!.isAfter(DateTime.now());
   bool get hasMedia => attachment != null || kind == 'file' || kind == 'image' || kind == 'gif';
   bool get isDisappearing => expiresAt != null;
   bool get isPoll => kind == 'poll' || pollData != null;
@@ -779,6 +896,57 @@ class Conversation {
   final bool isSelfChat;
   bool muted;
   bool archived;
+}
+
+/// Public metadata for one live broadcast (`/api/live`). Video, comments and
+/// reactions never touch the server — see `state/live_controller.dart`.
+class LiveStreamInfo {
+  const LiveStreamInfo({
+    required this.id,
+    required this.status,
+    this.hostId = '',
+    this.hostName = '',
+    this.hostHasAvatar = false,
+    this.title = '',
+    this.audienceType = 'friends',
+    this.groupName,
+    this.startedAt,
+    this.viewerCount = 0,
+    this.isHost = false,
+  });
+
+  final String id;
+  final String status;
+  final String hostId;
+  final String hostName;
+  final bool hostHasAvatar;
+  final String title;
+  final String audienceType;
+  final String? groupName;
+  final DateTime? startedAt;
+  final int viewerCount;
+  final bool isHost;
+
+  bool get isLive => status == 'live';
+
+  factory LiveStreamInfo.fromJson(Map<String, dynamic> json) {
+    final host = json['host'] is Map ? Map<String, dynamic>.from(json['host'] as Map) : const <String, dynamic>{};
+    final group = json['group'] is Map ? Map<String, dynamic>.from(json['group'] as Map) : null;
+    final display = (host['displayName'] as String? ?? '').trim();
+    return LiveStreamInfo(
+      id: json['id']?.toString() ?? '',
+      status: json['status'] as String? ?? 'ended',
+      hostId: host['id']?.toString() ?? '',
+      hostName: display.isNotEmpty ? display : (host['username'] as String? ?? 'Someone'),
+      hostHasAvatar: host['hasAvatar'] == true,
+      title: json['title'] as String? ?? '',
+      audienceType: json['audienceType'] as String? ?? 'friends',
+      groupName: group?['name'] as String?,
+      startedAt: DateTime.tryParse(json['startedAt']?.toString() ?? ''),
+      viewerCount: (json['viewerCount'] as num?)?.toInt() ?? 0,
+      isHost: json['isHost'] == true,
+    );
+  }
 }
 
 class ApiException implements Exception {

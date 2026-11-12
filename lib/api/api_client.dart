@@ -46,7 +46,8 @@ class ApiClient {
   }
 
   Future<dynamic> get(String path, {Map<String, String>? query}) async {
-    final res = await http.get(_uri(path, query), headers: _headers()).timeout(const Duration(seconds: 20));
+    // Vercel cold starts + emulator networking often exceed 20s.
+    final res = await http.get(_uri(path, query), headers: _headers()).timeout(const Duration(seconds: 45));
     return _decode(res);
   }
 
@@ -229,7 +230,16 @@ class ApiClient {
   Future<List<QcUser>> listFriends() async {
     final body = await get('/users/friends');
     final data = body['data'] as List<dynamic>? ?? [];
-    return data.map((e) => QcUser.fromJson(e as Map<String, dynamic>)).toList();
+    return data.map((e) => QcUser.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+  }
+
+  /// Discoverable people who are not already friends (website Friends → Discover).
+  Future<List<QcUser>> discoverUsers({String q = ''}) async {
+    final query = <String, String>{};
+    if (q.trim().isNotEmpty) query['q'] = q.trim();
+    final body = await get('/users/discover', query: query.isEmpty ? null : query);
+    final data = body['data'] as List<dynamic>? ?? [];
+    return data.map((e) => QcUser.fromJson(Map<String, dynamic>.from(e as Map))).toList();
   }
 
   Future<List<FriendRequest>> friendRequestsIncoming() async {
@@ -270,8 +280,14 @@ class ApiClient {
     await post('/users/friend-requests/$id/decline');
   }
 
-  Future<Map<String, dynamic>?> lookupContact(String q) async {
-    final body = await get('/users/lookup', query: {'q': q});
+  Future<Map<String, dynamic>?> lookupContact({String? email, String? phone}) async {
+    final query = <String, String>{};
+    if (email != null && email.trim().isNotEmpty) query['email'] = email.trim().toLowerCase();
+    if (phone != null && phone.trim().isNotEmpty) query['phone'] = phone.trim();
+    if (query.isEmpty) {
+      throw ApiException('Provide an email or phone number');
+    }
+    final body = await get('/users/lookup', query: query);
     return body['data'] as Map<String, dynamic>?;
   }
 
@@ -284,7 +300,7 @@ class ApiClient {
   Future<void> blockUser(String id) async => post('/users/$id/block');
   Future<void> unblockUser(String id) async => delete('/users/$id/block');
 
-  Future<void> removeFriend(String userId) async => delete('/users/$userId/friend');
+  Future<void> removeFriend(String userId) async => delete('/users/friends/$userId');
 
   Future<QcUser> muteChat({String? peerId, String? groupId, String duration = 'always'}) async {
     final body = await post('/users/me/mute', {
@@ -472,6 +488,28 @@ class ApiClient {
 
   Future<void> markRead(String userId) async {
     await post('/messages/$userId/read');
+  }
+
+  Future<void> markGroupRead(String groupId) async {
+    await post('/groups/$groupId/messages/read');
+  }
+
+  Future<void> markVoiceListened(String messageId) async {
+    await post('/messages/$messageId/listened');
+  }
+
+  /// Returns `{messages: [...], entries: [{messageId, markedAt}]}`.
+  Future<Map<String, dynamic>> getImportantMessages() async {
+    final body = await get('/messages/important');
+    return Map<String, dynamic>.from(body['data'] as Map? ?? const {});
+  }
+
+  Future<void> markImportant(String messageId) async {
+    await post('/messages/$messageId/important');
+  }
+
+  Future<void> unmarkImportant(String messageId) async {
+    await delete('/messages/$messageId/important');
   }
 
   Future<Map<String, dynamic>> reactToMessage(String id, Map<String, dynamic> payload) async {
@@ -811,6 +849,12 @@ class ApiClient {
   }
 
   /// Pin a message in a group.
+  /// Command Center hub mutation: `{action: add|update|remove|toggle, section: tasks|links|notes, ...}`.
+  Future<QcGroup> updateCommandCenter(String groupId, Map<String, dynamic> payload) async {
+    final body = await patch('/groups/$groupId/command-center', payload);
+    return QcGroup.fromJson(body['data'] as Map<String, dynamic>);
+  }
+
   Future<void> pinGroupMessage(String groupId, String messageId) async {
     await post('/groups/$groupId/pins/$messageId');
   }
@@ -943,5 +987,56 @@ class ApiClient {
 
   Future<void> rejectJoinRequest(String groupId, String userId) async {
     await post('/groups/$groupId/join-requests/$userId/reject');
+  }
+
+  // ── Live streams (metadata only — media is peer-to-peer) ──
+
+  Future<LiveStreamInfo> startLive({required String title, required Map<String, dynamic> audience}) async {
+    final body = await post('/live', {'title': title, 'audience': audience, 'record': false});
+    return LiveStreamInfo.fromJson(Map<String, dynamic>.from(body['data']['stream'] as Map));
+  }
+
+  Future<List<LiveStreamInfo>> listLive() async {
+    final body = await get('/live');
+    final data = (body['data'] as Map?)?['streams'] as List<dynamic>? ?? [];
+    return data.map((e) => LiveStreamInfo.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+  }
+
+  Future<LiveStreamInfo> getLive(String id) async {
+    final body = await get('/live/$id');
+    return LiveStreamInfo.fromJson(Map<String, dynamic>.from(body['data']['stream'] as Map));
+  }
+
+  /// Returns `stream` plus `hostPublicKeys` for sealing signaling to the host.
+  Future<Map<String, dynamic>> joinLive(String id) async {
+    final body = await post('/live/$id/join');
+    return Map<String, dynamic>.from(body['data'] as Map);
+  }
+
+  Future<void> leaveLive(String id) async => post('/live/$id/leave');
+
+  Future<Map<String, dynamic>> heartbeatLive(String id, List<String> connectedViewerIds) async {
+    final body = await post('/live/$id/heartbeat', {'connectedViewerIds': connectedViewerIds});
+    return Map<String, dynamic>.from((body['data'] as Map?) ?? const {});
+  }
+
+  Future<void> removeLiveViewer(String id, String userId) async => post('/live/$id/remove', {'userId': userId});
+
+  Future<void> endLive(String id) async => post('/live/$id/end');
+
+  // ── Call-signal REST fallback (when the socket is unavailable, e.g. Vercel) ──
+
+  Future<void> sendCallSignal({
+    required String to,
+    required String callId,
+    required String event,
+    required Map<String, dynamic> envelope,
+  }) async {
+    await post('/call-signals', {'to': to, 'callId': callId, 'event': event, 'envelope': envelope});
+  }
+
+  Future<Map<String, dynamic>> pollCallSignals({String? after}) async {
+    final body = await get('/call-signals', query: after == null ? null : {'after': after});
+    return Map<String, dynamic>.from((body['data'] as Map?) ?? const {});
   }
 }

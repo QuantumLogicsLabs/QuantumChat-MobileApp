@@ -7,10 +7,13 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../models/models.dart';
+import '../screens/go_live_screen.dart';
+import '../screens/live_stream_screen.dart';
 import '../screens/story_archive_screen.dart';
 import '../screens/story_drafts_screen.dart';
 import '../state/auth_controller.dart';
 import '../state/chat_controller.dart';
+import '../state/live_controller.dart';
 import '../state/theme_controller.dart';
 import '../crypto/key_storage.dart';
 import '../utils/story_media.dart';
@@ -24,7 +27,12 @@ class StoriesRail extends StatelessWidget {
     final chat = context.watch<ChatController>();
     final colors = context.watch<ThemeController>().colors;
     final me = context.watch<AuthController>().user;
+    final live = context.watch<LiveController>()..startDirectory();
     if (me == null) return const SizedBox.shrink();
+
+    // Friends who are live right now get a ring ahead of stories (website parity).
+    final liveRings = live.streams.where((s) => !s.isHost && s.isLive).toList();
+    final liveHostIds = liveRings.map((s) => s.hostId).toSet();
 
     final byUser = <String, StoryItem>{};
     for (final s in chat.stories) {
@@ -47,7 +55,13 @@ class StoriesRail extends StatelessWidget {
             onTap: () => _showCreateMenu(context),
             onLongPress: () => _showCreateMenu(context),
           ),
-          ...items.map(
+          ...liveRings.map(
+            (s) => _LiveChip(
+              stream: s,
+              onTap: () => _watchLive(context, s),
+            ),
+          ),
+          ...items.where((s) => !liveHostIds.contains(s.userId)).map(
             (s) => _StoryChip(
               story: s,
               colors: colors,
@@ -68,6 +82,15 @@ class StoriesRail extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              leading: const Icon(Icons.sensors, color: Color(0xFFE53935)),
+              title: const Text('Go live'),
+              subtitle: const Text('Broadcast live video to friends or a group'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _openGoLive(context);
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.photo_outlined),
               title: const Text('Photo story'),
@@ -104,6 +127,16 @@ class StoriesRail extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  void _openGoLive(BuildContext context) {
+    if (context.read<LiveController>().session != null) return;
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const GoLiveScreen()));
+  }
+
+  void _watchLive(BuildContext context, LiveStreamInfo stream) {
+    if (context.read<LiveController>().session != null) return;
+    Navigator.push(context, MaterialPageRoute(builder: (_) => LiveStreamScreen(watchStreamId: stream.id)));
   }
 
   Future<void> _createPhotoStory(BuildContext context) async {
@@ -810,6 +843,73 @@ class _StoryChip extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LiveChip extends StatelessWidget {
+  const _LiveChip({required this.stream, required this.onTap});
+  final LiveStreamInfo stream;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.watch<ThemeController>().colors;
+    return Padding(
+      padding: const EdgeInsets.only(right: 10),
+      child: Tooltip(
+        message: stream.title.isNotEmpty ? '${stream.hostName}: ${stream.title}' : '${stream.hostName} is live',
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(40),
+          child: Column(
+            children: [
+              Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.bottomCenter,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFFE53935)),
+                    child: UserAvatar(
+                      name: stream.hostName,
+                      userId: stream.hostId,
+                      hasAvatar: stream.hostHasAvatar,
+                      size: 54,
+                    ),
+                  ),
+                  Positioned(
+                    bottom: -4,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE53935),
+                        borderRadius: BorderRadius.circular(3),
+                        border: Border.all(color: colors.body, width: 1.5),
+                      ),
+                      child: const Text(
+                        'LIVE',
+                        style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              SizedBox(
+                width: 64,
+                child: Text(
+                  stream.hostName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: colors.textMuted, fontSize: 11),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
