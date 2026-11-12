@@ -8,7 +8,11 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 class AppConfig {
   static const _defined = String.fromEnvironment('API_URL');
   static const _aiDefined = String.fromEnvironment('AI_API_URL');
-  static const productionFallback = 'https://quantum-chat-backend-six.vercel.app';
+  static const productionFallback = 'https://quantum-chat-backend.vercel.app';
+
+  /// Deployments Vercel has disabled (402 DEPLOYMENT_DISABLED). A base URL
+  /// saved in Settings that points at one of these falls back to production.
+  static const disabledApiBases = {'https://quantum-chat-backend-six.vercel.app'};
   static const productionAiFallback = 'https://ai.quantumlogicslimited.com/api/v1';
 
   /// Same backend as chat.quantumlogicslimited.com. For a local backend, pass

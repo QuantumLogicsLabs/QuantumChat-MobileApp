@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config.dart';
 import 'qc_crypto.dart';
 
 const _tokenKey = 'qc_token';
@@ -173,7 +174,11 @@ class KeyStorage {
     prefs.remove(_sessionIdKey);
   }
 
-  String? getApiBase() => prefs.getString(_apiBaseKey);
+  String? getApiBase() {
+    final saved = prefs.getString(_apiBaseKey);
+    if (saved != null && AppConfig.disabledApiBases.contains(saved)) return null;
+    return saved;
+  }
   Future<void> setApiBase(String url) => prefs.setString(_apiBaseKey, url.replaceAll(RegExp(r'/$'), ''));
 
   String? getAiApiBase() => prefs.getString(_aiApiBaseKey);

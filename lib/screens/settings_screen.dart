@@ -568,7 +568,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: TextStyle(color: colors.textMuted, fontSize: 12),
               ),
               const SizedBox(height: 8),
-              TextField(controller: apiBase, decoration: const InputDecoration(hintText: 'https://quantum-chat-backend-six.vercel.app')),
+              TextField(controller: apiBase, decoration: const InputDecoration(hintText: 'https://quantum-chat-backend.vercel.app')),
               const SizedBox(height: 10),
               OutlinedButton(
                 onPressed: () async {
